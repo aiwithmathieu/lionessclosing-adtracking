@@ -1138,7 +1138,7 @@ function TabComparaison({ savedCampaigns, onDelete }) {
   ];
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="p-6 space-y-6">
       {/* Sélecteurs campagnes */}
       <div className="grid grid-cols-3 gap-4 items-center">
         <div className="space-y-1">
@@ -1374,7 +1374,7 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-4">
+    <div className="p-6 space-y-4">
       {/* En-tête */}
       <div className="flex items-center justify-between">
         <div>
@@ -1750,7 +1750,7 @@ function App() {
         <HeaderImport />
         {view === "historique"  && <TabHistorique savedCampaigns={savedCampaigns} onDelete={deleteCampaign} onRename={renameCampaign} onReimport={reimportCampaign} onGoComparaison={goComparaison} onLoad={loadCampaign} />}
         {view === "comparaison" && (
-          <div className="max-w-5xl mx-auto p-6">
+          <div className="p-6">
             <TabComparaison savedCampaigns={savedCampaigns} onDelete={deleteCampaign} />
           </div>
         )}
@@ -1842,7 +1842,7 @@ function App() {
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto">
+      <div className="w-full">
         {tab === "dashboard" && <TabDashboard data={data} />}
         {tab === "groupes"   && <TabParGroupe data={data} />}
         {tab === "pubs"      && <TabPubs data={data} />}
