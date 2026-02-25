@@ -4,15 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>🦁 Lioness Closing — Analyse Pub</title>
-  <!-- React -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <!-- Recharts (dépend de React qui doit être chargé avant) -->
-  <script>window.React = React;</script>
-  <script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
-  <!-- Babel (transpile JSX dans le navigateur) -->
+  <!-- React 18 + PropTypes -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <!-- Recharts 2.1.16 — version stable avec React 18 UMD -->
+  <script src="https://unpkg.com/recharts@2.1.16/umd/Recharts.js"></script>
+  <!-- Babel standalone -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-  <!-- Tailwind CDN -->
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #f8fafc; }
@@ -22,7 +22,7 @@
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
 const { useState, useCallback, useMemo, useEffect } = React;
-const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LineChart, Line, PieChart, Pie, Legend, Sector } = window.Recharts || {};
+const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LineChart, Line, PieChart, Pie, Legend, Sector } = Recharts;
 
 // ─── CONSTANTES COULEURS ────────────────────────────────────────────────────
 const G_COLOR = { A: "#6366f1", B: "#10b981", C: "#f59e0b", "?": "#94a3b8" };
@@ -1845,7 +1845,8 @@ function App() {
 }
 
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
+    const container = document.getElementById('root');
+    const root = ReactDOM.createRoot(container);
     root.render(React.createElement(App));
   </script>
 </body>
