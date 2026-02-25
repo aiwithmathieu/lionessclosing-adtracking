@@ -1,0 +1,1852 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🦁 Lioness Closing — Analyse Pub</title>
+  <!-- React -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Recharts (dépend de React qui doit être chargé avant) -->
+  <script>window.React = React;</script>
+  <script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
+  <!-- Babel (transpile JSX dans le navigateur) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+const { useState, useCallback, useMemo, useEffect } = React;
+const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LineChart, Line, PieChart, Pie, Legend, Sector } = window.Recharts || {};
+
+// ─── CONSTANTES COULEURS ────────────────────────────────────────────────────
+const G_COLOR = { A: "#6366f1", B: "#10b981", C: "#f59e0b", "?": "#94a3b8" };
+const G_LABEL = { A: "Big Idea", B: "Véhicule", C: "Mécanisme" };
+
+// ─── HELPERS ────────────────────────────────────────────────────────────────
+const fmtEur  = (n) => `${Math.round(n).toLocaleString("fr-FR")} €`;
+const fmtEur2 = (n) => `${Number(n).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+const fmt     = (n, d = 1) => Number(n).toFixed(d);
+const safe    = (n) => (isFinite(n) && !isNaN(n) ? n : 0);
+const toF     = (s) => { try { return parseFloat((s || "0").toString().replace(/[€\s\xa0\u202f]/g, "").replace(",", ".")) || 0; } catch { return 0; } };
+
+// ─── PARSING ────────────────────────────────────────────────────────────────
+function normalizeName(s) {
+  s = s.replace(/\s*[-–]\s*r[eé]tractat\w*/gi, "").trim();
+  s = s.replace(/\s+retractat\w*/gi, "").trim();
+  let normalized = s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const tokens = normalized.replace(/[^a-z0-9]/g, " ").split(" ").filter(t => t.length > 1);
+  const stop = new Set(["de","la","le","les","du","des","et","en","da","di","van"]);
+  return tokens.filter(t => !stop.has(t));
+}
+
+function parseModePaiement(s) {
+  const m1 = s.match(/(\d+)\s*[x*]\s*([\d\s,.]+)\s*euros?/i);
+  if (m1) return Math.round(parseInt(m1[1]) * parseFloat(m1[2].replace(/\s/g, "").replace(",", ".")));
+  const m2 = s.match(/([\d\s,.]+)\s*euros?/i);
+  if (m2) return Math.round(parseFloat(m2[1].replace(/\s/g, "").replace(",", ".")));
+  return null;
+}
+
+function parseCSV(text, sep = ",") {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const headers = lines[0].split(sep).map(h => h.replace(/^\uFEFF/, "").trim().replace(/^"|"$/g, ""));
+  return lines.slice(1).filter(l => l.trim()).map(line => {
+    const vals = line.split(sep).map(v => v.trim().replace(/^"|"$/g, ""));
+    return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
+  });
+}
+
+function parseCompta(text) {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/^\uFEFF/, "").split("\n");
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    if (!line.trim()) continue;
+    const cols = line.split(";");
+    if (!cols[0]?.trim().match(/^\d+$/)) continue;
+    const type = (cols[4] || "").trim().toLowerCase();
+    if (type !== "immersion") continue;
+    const nameRaw = (cols[2] || "").trim();
+    const isRetract = /r[eé]tractat/i.test(nameRaw);
+    const mode = (cols[5] || "").trim();
+    const total = parseModePaiement(mode);
+    rows.push({ num: parseInt(cols[0]), name: nameRaw, tokens: normalizeName(nameRaw), total, isRetract });
+  }
+  return rows;
+}
+
+function parseHyrosReport(text) {
+  const rows = parseCSV(text, ",");
+  const bodies = {};
+  let nonTaggedCost = 0, nonTaggedLeads = 0, nonTaggedCalls = 0, nonTaggedSales = 0;
+
+  for (const r of rows) {
+    if (r.Name === "Total" || !r.Name) continue;
+    const sc = r["Source Category"] || "";
+    const m = sc.match(/\[Groupe ([A-Z])\].*?\[Body ([A-Z0-9]+)\]/i);
+    const cost = toF(r.Cost), leads = parseInt(r.Leads || 0), calls = parseInt(r["Qualified Calls"] || 0);
+    const sales = parseInt(r.Sales || 0), cog = toF(r["Cost of Goods"]);
+
+    if (m) {
+      const key = `${m[1].toUpperCase()}_${m[2].toUpperCase()}`;
+      if (!bodies[key]) bodies[key] = { key, groupe: m[1].toUpperCase(), body: m[2].toUpperCase(), cost: 0, leads: 0, calls: 0, salesHyros: 0, cog: 0 };
+      bodies[key].cost += cost;
+      bodies[key].leads += leads;
+      bodies[key].calls += calls;
+      bodies[key].salesHyros += sales;
+      bodies[key].cog += cog;
+    } else {
+      nonTaggedCost += cost;
+      nonTaggedLeads += leads;
+      nonTaggedCalls += calls;
+      nonTaggedSales += sales;
+    }
+  }
+
+  // Global stats from Total row (not double-counted)
+  const totalRow = rows.find(r => r.Name === "Total") || {};
+  return {
+    bodies: Object.values(bodies),
+    nonTaggedCost, nonTaggedLeads, nonTaggedCalls, nonTaggedSales,
+    globalLeads: parseInt(totalRow.Leads || 0),
+    globalCalls: parseInt(totalRow["Qualified Calls"] || 0),
+    globalCost: toF(totalRow.Cost),
+    globalSalesHyros: parseInt(totalRow.Sales || 0),
+  };
+}
+
+function parseHyrosNomMails(text) {
+  const rows = parseCSV(text, ",");
+  return rows.map(r => {
+    const full = `${r["First name"] || ""} ${r["Last name"] || ""}`.trim();
+    return {
+      email: (r.Email || "").trim().toLowerCase(),
+      name: full,
+      tokens: normalizeName(full),
+      firstSrc: r["First source"] || "-",
+      lastSrc: r["Last source"] || "-",
+    };
+  });
+}
+
+function extractGB(src) {
+  const m1 = src.match(/\[Groupe ([A-Z])\].*?\[Body ([A-Z0-9]+)\]/i);
+  if (m1) return [m1[1].toUpperCase(), m1[2].toUpperCase()];
+  const m2 = src.match(/groupe-([a-z]).*?body-([a-z0-9]+)/i);
+  if (m2) return [m2[1].toUpperCase(), m2[2].toUpperCase()];
+  return [null, null];
+}
+
+function matchSalesToPubs(comptaRows, nomMails) {
+  const real = comptaRows.filter(r => !r.isRetract);
+  const retracts = comptaRows.filter(r => r.isRetract);
+
+  const bodyRevenu = {};
+  let nonAttrVentes = 0, nonAttrRevenu = 0;
+  let matchedCount = 0;
+
+  for (const c of real) {
+    const ct = new Set(c.tokens);
+    let best = null, bestScore = 0;
+    for (const entry of nomMails) {
+      const score = [...ct].filter(t => entry.tokens.includes(t)).length;
+      if (score > bestScore) { bestScore = score; best = entry; }
+    }
+    if (bestScore < 1 || !best) { nonAttrVentes++; nonAttrRevenu += c.total || 0; continue; }
+
+    let g = null, b = null;
+    for (const src of [best.firstSrc, best.lastSrc]) {
+      [g, b] = extractGB(src);
+      if (g) break;
+    }
+    if (g && b) {
+      const key = `${g}_${b}`;
+      if (!bodyRevenu[key]) bodyRevenu[key] = { ventes: 0, revenu: 0 };
+      bodyRevenu[key].ventes++;
+      bodyRevenu[key].revenu += c.total || 0;
+      matchedCount++;
+    } else {
+      nonAttrVentes++;
+      nonAttrRevenu += c.total || 0;
+    }
+  }
+
+  const totalRevenu = real.reduce((s, r) => s + (r.total || 0), 0);
+  return { bodyRevenu, nonAttrVentes, nonAttrRevenu, matchedCount, totalVentes: real.length, retracts: retracts.length, totalRevenu };
+}
+
+// ─── DONNÉES DÉMO — Immersion 1 (figées, Option B : inject processedData) ────
+const DEMO_DATA = (() => {
+  const bodies = [
+    { key:"A_A1", groupe:"A", body:"A1", cost:629,   leads:97,   calls:13, salesHyros:3,  cog:0 },
+    { key:"A_A2", groupe:"A", body:"A2", cost:794,   leads:127,  calls:23, salesHyros:2,  cog:0 },
+    { key:"A_A3", groupe:"A", body:"A3", cost:527,   leads:80,   calls:21, salesHyros:0,  cog:0 },
+    { key:"A_A4", groupe:"A", body:"A4", cost:2579,  leads:492,  calls:93, salesHyros:10, cog:0 },
+    { key:"A_IA", groupe:"A", body:"IA", cost:46,    leads:9,    calls:0,  salesHyros:0,  cog:0 },
+    { key:"B_B1", groupe:"B", body:"B1", cost:381,   leads:49,   calls:3,  salesHyros:1,  cog:0 },
+    { key:"B_B2", groupe:"B", body:"B2", cost:450,   leads:58,   calls:6,  salesHyros:1,  cog:0 },
+    { key:"B_B3", groupe:"B", body:"B3", cost:487,   leads:62,   calls:6,  salesHyros:0,  cog:0 },
+    { key:"B_B4", groupe:"B", body:"B4", cost:2674,  leads:422,  calls:66, salesHyros:3,  cog:0 },
+    { key:"C_C1", groupe:"C", body:"C1", cost:5699,  leads:1264, calls:155,salesHyros:7,  cog:0 },
+    { key:"C_C2", groupe:"C", body:"C2", cost:16240, leads:4019, calls:359,salesHyros:16, cog:0 },
+    { key:"C_C3", groupe:"C", body:"C3", cost:664,   leads:95,   calls:15, salesHyros:0,  cog:0 },
+    { key:"C_C4", groupe:"C", body:"C4", cost:2500,  leads:623,  calls:36, salesHyros:2,  cog:0 },
+  ];
+  const bodyRevenu = {
+    A_A1:{ ventes:7,  revenu:16089 }, A_A2:{ ventes:2, revenu:5047 },
+    A_A3:{ ventes:3,  revenu:6991  }, A_A4:{ ventes:19,revenu:46242},
+    B_B2:{ ventes:2,  revenu:3994  }, B_B3:{ ventes:1, revenu:2550 },
+    B_B4:{ ventes:12, revenu:29341 }, C_C1:{ ventes:23,revenu:54863},
+    C_C2:{ ventes:42, revenu:100949}, C_C3:{ ventes:4, revenu:9545 },
+    C_C4:{ ventes:5,  revenu:11595 },
+  };
+  // Fake compta rows (just enough for TabDashboard calcs)
+  const compta = [
+    ...[...Array(147)].map((_,i) => ({ total: Math.round(350222/147), isRetract: false, tokens:[], name:"demo" })),
+    ...[...Array(12)].map((_,i) => ({ total: Math.round(28920/12), isRetract: true, tokens:[], name:"demo - rétractation" })),
+  ];
+  return {
+    isDemo: true,
+    report: {
+      bodies, nonTaggedCost:297.58, nonTaggedLeads:0, nonTaggedCalls:0, nonTaggedSales:0,
+      globalLeads:7568, globalCalls:816, globalCost:33966.41, globalSalesHyros:45,
+    },
+    compta,
+    nomMails: [],
+    matching: {
+      bodyRevenu, nonAttrVentes:27, nonAttrRevenu:63016,
+      matchedCount:120, totalVentes:147, retracts:12, totalRevenu:350222,
+    },
+    meta: { periodeAds:"13–28 Jan 2026", periodeCompta:"1 Jan–22 Fév 2026", matching:"82%" },
+  };
+})();
+
+// ─── COMPOSANTS UI ───────────────────────────────────────────────────────────
+const ABBREV = {
+  CPA:     "Coût Par Acquisition — budget total divisé par le nombre de ventes effectives",
+  CPL:     "Coût Par Lead — montant dépensé pour générer un lead",
+  CPCall:  "Coût Par Call — montant dépensé pour obtenir un appel qualifié booké",
+  CVR:     "Taux de Conversion — % de leads ou calls aboutissant à une vente",
+  "Lead→Call":  "Taux de transformation Lead vers Call — % des leads qui bookent un appel",
+  "Call→Vente": "Taux de closing — % des appels qui aboutissent à une vente signée",
+  "Lead→Vente": "Taux de conversion global — % des leads qui deviennent clients",
+};
+
+function Abbrev({ term, children }) {
+  const [pos, setPos] = useState(null);
+  const tip = ABBREV[term];
+  if (!tip) return <span>{children || term}</span>;
+  return (
+    <>
+      <span className="inline-flex items-center gap-0.5 cursor-help"
+        onMouseEnter={e => { const r = e.currentTarget.getBoundingClientRect(); setPos({ x: Math.min(r.left + r.width/2, window.innerWidth - 270), y: r.top }); }}
+        onMouseLeave={() => setPos(null)}>
+        <span className="border-b border-dashed border-slate-400 text-slate-700">{children || term}</span>
+        <span className="text-slate-400 text-[10px]">ℹ</span>
+      </span>
+      {pos && (
+        <div style={{ position:"fixed", left:pos.x, top:pos.y-8, transform:"translateX(-50%) translateY(-100%)", zIndex:9999 }}
+          className="w-64 bg-slate-900 text-white text-xs rounded-lg px-3 py-2 leading-relaxed shadow-xl pointer-events-none">
+          <strong className="text-amber-300">{term}</strong><br />{tip}
+          <div style={{ position:"absolute", top:"100%", left:"50%", transform:"translateX(-50%)", width:0, height:0, borderLeft:"5px solid transparent", borderRight:"5px solid transparent", borderTop:"5px solid #0f172a" }} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function KpiCard({ label, value, sub, color = "slate", highlight, abbrev }) {
+  const borders = { green:"border-green-400", indigo:"border-indigo-400", amber:"border-amber-400", rose:"border-rose-400", slate:"border-slate-300", purple:"border-purple-400" };
+  return (
+    <div className={`bg-white rounded-xl shadow-sm border-l-4 ${borders[color]} p-4`}>
+      <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">{abbrev ? <Abbrev term={abbrev}>{label}</Abbrev> : label}</div>
+      <div className={`text-2xl font-bold ${highlight || "text-slate-800"}`}>{value}</div>
+      {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
+    </div>
+  );
+}
+
+function Section({ title, sub, children }) {
+  return (
+    <div className="mb-8">
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wider">{title}</h2>
+        {sub && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
+        <div className="border-b border-slate-200 mt-2" />
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function renderActiveShape(props) {
+  const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill, payload, percent, value } = props;
+  return (
+    <g>
+      <text x={cx} y={cy-14} textAnchor="middle" fill="#1e293b" style={{ fontSize:13, fontWeight:700 }}>{payload.name}</text>
+      <text x={cx} y={cy+8} textAnchor="middle" fill="#64748b" style={{ fontSize:12 }}>{payload.fmtVal ? payload.fmtVal(value) : value}</text>
+      <text x={cx} y={cy+26} textAnchor="middle" fill={fill} style={{ fontSize:13, fontWeight:600 }}>{(percent*100).toFixed(1)}%</text>
+      <Sector cx={cx} cy={cy} innerRadius={innerRadius} outerRadius={outerRadius+8} startAngle={startAngle} endAngle={endAngle} fill={fill} />
+      <Sector cx={cx} cy={cy} innerRadius={outerRadius+12} outerRadius={outerRadius+16} startAngle={startAngle} endAngle={endAngle} fill={fill} />
+    </g>
+  );
+}
+
+// ─── FILE UPLOAD ZONE ────────────────────────────────────────────────────────
+function FileZone({ id, label, icon, accepted, loaded, loadedName, onLoad, onClear, hint }) {
+  const [drag, setDrag] = useState(false);
+  const handleFile = useCallback((file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => onLoad(e.target.result, file.name);
+    reader.readAsText(file, "utf-8");
+  }, [onLoad]);
+
+  return (
+    <label
+      htmlFor={loaded ? undefined : id}
+      className={`relative flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-5 transition-all
+        ${loaded ? "border-green-400 bg-green-50 cursor-default" : drag ? "border-indigo-400 bg-indigo-50 cursor-pointer" : "border-slate-300 bg-slate-50 hover:border-indigo-300 hover:bg-indigo-50/40 cursor-pointer"}`}
+      onDragOver={e => { if (!loaded) { e.preventDefault(); setDrag(true); } }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={e => { if (!loaded) { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer.files[0]); } }}
+    >
+      <input id={id} type="file" accept=".csv" className="hidden" onChange={e => handleFile(e.target.files[0])} />
+      {loaded && onClear && (
+        <button
+          type="button"
+          onClick={e => { e.preventDefault(); e.stopPropagation(); onClear(); }}
+          className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full bg-red-100 hover:bg-red-200 text-red-500 hover:text-red-700 transition-colors text-xs font-bold"
+          title="Supprimer ce fichier"
+        >✕</button>
+      )}
+      <span className="text-2xl">{loaded ? "✅" : icon}</span>
+      <div className="text-center">
+        <div className={`text-sm font-semibold ${loaded ? "text-green-700" : "text-slate-700"}`}>{label}</div>
+        {hint && !loaded && <div className="text-[11px] text-slate-400 mt-1">{hint}</div>}
+        {loaded && <div className="text-xs text-green-600 mt-1 truncate max-w-[220px]">{loadedName || "Fichier chargé"}</div>}
+      </div>
+    </label>
+  );
+}
+
+// ─── ÉCRAN IMPORT ────────────────────────────────────────────────────────────
+function ImportScreen({ files, setFile, onDemo }) {
+  const allLoaded = files.report && files.compta && files.nomMails;
+  return (
+    <div className="max-w-2xl mx-auto p-8 space-y-6">
+      <div className="text-center">
+        <div className="text-4xl mb-3">🦁</div>
+        <h1 className="text-xl font-bold text-slate-900">🦁 Lioness Closing — Analyse Pub</h1>
+        <p className="text-sm text-slate-500 mt-2">Importez les 3 fichiers pour générer le dashboard complet</p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4">
+        <FileZone id="f-report" label="Reporting Ads Hyros" icon="📊"
+          hint="Report_..._SCIENTIFIC-1-Full_...csv — Export Hyros Ads level"
+          loaded={!!files.report} loadedName={files.reportName}
+          onLoad={(text, name) => setFile("report", text, name)}
+          onClear={() => setFile("report", null, null)} />
+        <FileZone id="f-compta" label="Suivi ventes Lioness Closing" icon="📋"
+          hint="Ventes_Lioness_Closing_-_Immersion__1_.csv — Fichier séparateur ;"
+          loaded={!!files.compta} loadedName={files.comptaName}
+          onLoad={(text, name) => setFile("compta", text, name)}
+          onClear={() => setFile("compta", null, null)} />
+        <FileZone id="f-nommails" label="Export Sales Hyros" icon="👤"
+          hint="Sales_hyros_nom___mails.csv — Clients avec email et source pub"
+          loaded={!!files.nomMails} loadedName={files.nomMailsName}
+          onLoad={(text, name) => setFile("nomMails", text, name)}
+          onClear={() => setFile("nomMails", null, null)} />
+      </div>
+
+      {allLoaded && (
+        <div className="bg-green-100 border border-green-300 rounded-xl p-4 text-center text-green-800 text-sm font-semibold">
+          ✅ Tous les fichiers chargés — le dashboard se génère automatiquement
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <div className="flex-1 border-t border-slate-200" />
+        <span className="text-xs text-slate-400">ou</span>
+        <div className="flex-1 border-t border-slate-200" />
+      </div>
+
+      <button onClick={onDemo}
+        className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-semibold py-3 px-6 rounded-xl hover:from-indigo-600 hover:to-purple-700 transition-all shadow-md hover:shadow-lg">
+        <span className="text-lg">🎬</span>
+        <span className="text-sm font-bold">Démo</span>
+      </button>
+    </div>
+  );
+}
+
+// ─── DASHBOARD TABS ──────────────────────────────────────────────────────────
+function TabDashboard({ data }) {
+  const { report, matching, compta } = data;
+  const { globalCost, globalLeads, globalCalls } = report;
+  const { totalVentes, retracts, totalRevenu, nonAttrVentes } = matching;
+
+  const ROAS       = safe(totalRevenu / globalCost);
+  const CPA        = safe(globalCost / totalVentes);
+  const CALL_CVR   = safe(totalVentes / globalCalls * 100);
+  const LEAD_CVR   = safe(totalVentes / globalLeads * 100);
+  const panierMoy  = safe(totalRevenu / totalVentes);
+  const revenuBrut = compta.reduce((s, r) => s + (r.total || 0), 0);
+  const revRetract = compta.filter(r => r.isRetract).reduce((s, r) => s + (r.total || 0), 0);
+
+  // Ventes par jour from compta (parse date col if available — approximate grouping)
+  // We'll show KPIs instead since date parsing is complex
+
+  // Levier data from report
+  const leviers = ["A","B","C"].map(g => {
+    const bs = report.bodies.filter(b => b.groupe === g);
+    return {
+      label: `${g} — ${G_LABEL[g] || g}`,
+      color: G_COLOR[g],
+      cost: bs.reduce((s,b) => s+b.cost, 0),
+      leads: bs.reduce((s,b) => s+b.leads, 0),
+      calls: bs.reduce((s,b) => s+b.calls, 0),
+    };
+  });
+
+  const execSummary = ROAS >= 8
+    ? `✅ Campagne très rentable — ROAS ${fmt(ROAS,1)}x — ${totalVentes} ventes effectives — Groupe ${leviers.sort((a,b) => safe(matching.bodyRevenu[`${b.label[0]}_${b.label[0]}1`]?.revenu||0)/b.cost - safe(matching.bodyRevenu[`${a.label[0]}_${a.label[0]}1`]?.revenu||0)/a.cost)[0]?.label[0] || "A"} meilleur closing`
+    : ROAS >= 4
+    ? `🟡 Campagne rentable — ROAS ${fmt(ROAS,1)}x — ${totalVentes} ventes effectives`
+    : `⚠️ ROAS ${fmt(ROAS,1)}x — Analyse approfondie recommandée`;
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Executive summary */}
+      <div className={`rounded-xl p-4 text-sm font-semibold border ${ROAS >= 8 ? "bg-green-50 border-green-300 text-green-800" : ROAS >= 4 ? "bg-amber-50 border-amber-300 text-amber-800" : "bg-rose-50 border-rose-300 text-rose-800"}`}>
+        {execSummary}
+        <span className="ml-2 font-normal text-xs opacity-70">· Matching {matching.matchedCount}/{totalVentes} ventes attribuées à une pub</span>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-800">
+        <strong>Méthodologie :</strong> Budget et KPIs pub (leads, calls) issus du <strong>Report Hyros</strong>.
+        Ventes et revenu issus de la <strong>comptabilité interne</strong>.
+        Attribution pub par matching nom compta → email Hyros → source pub.
+        {nonAttrVentes > 0 && ` ${nonAttrVentes} ventes (${Math.round(nonAttrVentes/totalVentes*100)}%) non attribuées = campagnes sans tag [Groupe-X] ou clientes absentes de Hyros.`}
+      </div>
+
+      <Section title="Performance globale">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <KpiCard label="Budget dépensé" value={fmtEur(globalCost)} sub="Report Hyros" color="slate" />
+          <KpiCard label="ROAS global" value={`${fmt(ROAS,2)}x`} sub="Revenu compta / Budget" color={ROAS >= 8 ? "green" : ROAS >= 4 ? "amber" : "rose"} highlight={ROAS >= 8 ? "text-green-600" : ROAS >= 4 ? "text-amber-600" : "text-rose-600"} />
+          <KpiCard label="CPA moyen" value={fmtEur(CPA)} sub="Budget / ventes effectives" color="indigo" abbrev="CPA" />
+          <KpiCard label="Panier moyen" value={fmtEur(panierMoy)} sub="Revenu effectif / ventes" color="purple" />
+        </div>
+      </Section>
+
+      <Section title="Ventes & Revenu" sub="Comptabilité interne">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+          <div className="bg-slate-50 rounded-xl border border-slate-200 p-5 text-center">
+            <div className="text-xs text-slate-500 uppercase mb-2">Ventes totales</div>
+            <div className="text-4xl font-bold text-slate-800">{compta.length}</div>
+            <div className="text-xs text-slate-400 mt-1">Signatures compta brutes</div>
+          </div>
+          <div className="bg-rose-50 rounded-xl border border-rose-200 p-5 text-center">
+            <div className="text-xs text-rose-500 uppercase mb-2">Rétractations</div>
+            <div className="text-4xl font-bold text-rose-600">−{retracts}</div>
+            <div className="text-xs text-rose-400 mt-1">{fmt(retracts/compta.length*100,1)}% du total</div>
+          </div>
+          <div className="bg-green-50 rounded-xl border border-green-300 p-5 text-center">
+            <div className="text-xs text-green-600 uppercase mb-2">Ventes effectives</div>
+            <div className="text-4xl font-bold text-green-700">{totalVentes}</div>
+            <div className="text-xs text-green-500 mt-1">Base ROAS &amp; <Abbrev term="CPA">CPA</Abbrev></div>
+          </div>
+        </div>
+
+        <div className="bg-slate-50 rounded-xl p-4 flex flex-wrap items-center gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-500 text-xs">Revenu brut total</span>
+            <span className="font-semibold text-slate-700">{fmtEur(revenuBrut)}</span>
+          </div>
+          <span className="text-slate-300">→</span>
+          <div className="flex items-center gap-2">
+            <span className="text-rose-400 text-xs">− Rétractations</span>
+            <span className="font-semibold text-rose-600">−{fmtEur(revRetract)}</span>
+          </div>
+          <span className="text-slate-300">=</span>
+          <div className="flex items-center gap-2">
+            <span className="text-green-600 text-xs font-semibold">Revenu effectif</span>
+            <span className="font-bold text-green-700 text-base">{fmtEur(totalRevenu)}</span>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Tracking Hyros — Pub">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <KpiCard label="Leads générés" value={globalLeads.toLocaleString("fr-FR")} sub="Total tagués Hyros" color="indigo" />
+          <KpiCard label="Calls bookés" value={globalCalls.toLocaleString("fr-FR")} sub="Qualified Calls Hyros" color="purple" />
+          <KpiCard label="Coût / lead" value={fmtEur2(safe(globalCost/globalLeads))} sub="Budget / leads" color="slate" abbrev="CPL" />
+          <KpiCard label="Coût / call" value={fmtEur(safe(globalCost/globalCalls))} sub="Budget / calls" color="slate" abbrev="CPCall" />
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-4">
+          <KpiCard label="Lead → Call" value={`${fmt(safe(globalCalls/globalLeads*100),1)}%`} sub={`${globalCalls} calls / ${globalLeads.toLocaleString("fr-FR")} leads`} color="slate" abbrev="Lead→Call" />
+          <KpiCard label="Call → Vente" value={`${fmt(CALL_CVR,1)}%`} sub={`${totalVentes} ventes / ${globalCalls} calls`} color={CALL_CVR >= 15 ? "green" : "amber"} abbrev="Call→Vente" />
+          <KpiCard label="Lead → Vente" value={`${fmt(LEAD_CVR,2)}%`} sub={`${totalVentes} ventes / ${globalLeads.toLocaleString("fr-FR")} leads`} color="slate" abbrev="Lead→Vente" />
+        </div>
+      </Section>
+
+      <Section title="Budget & Volume par levier" sub="Hyros — agrégé par groupe">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
+          <div>
+            <p className="text-xs text-slate-500 mb-2">Budget dépensé (€)</p>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={leviers} layout="vertical" margin={{ left:0, right:30 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" tickFormatter={v => `${(v/1000).toFixed(0)}k€`} tick={{ fontSize:11 }} />
+                <YAxis type="category" dataKey="label" tick={{ fontSize:11 }} width={115} />
+                <Tooltip formatter={v => fmtEur(v)} />
+                <Bar dataKey="cost" name="Budget">{leviers.map(d => <Cell key={d.label} fill={d.color} />)}</Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 mb-2">Calls &amp; Leads générés</p>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={leviers} layout="vertical" margin={{ left:0, right:30 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" tick={{ fontSize:11 }} />
+                <YAxis type="category" dataKey="label" tick={{ fontSize:11 }} width={115} />
+                <Tooltip />
+                <Bar dataKey="leads" name="Leads" fill="#cbd5e1" />
+                <Bar dataKey="calls" name="Calls" fill="#8b5cf6" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 text-slate-600">
+                {["Levier","Budget","% budget","Leads","Calls",
+                  <Abbrev term="Lead→Call">Lead→Call</Abbrev>,
+                  <Abbrev term="CPL">€/lead</Abbrev>,
+                  <Abbrev term="CPCall">€/call</Abbrev>
+                ].map((h,i) => <th key={i} className={`p-2 ${i===0?"text-left":"text-right"}`}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {leviers.map(d => (
+                <tr key={d.label} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="p-2 font-medium">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full" style={{ background: d.color }} />
+                      {d.label}
+                    </span>
+                  </td>
+                  <td className="text-right p-2">{fmtEur(d.cost)}</td>
+                  <td className="text-right p-2">{fmt(safe(d.cost/globalCost*100),1)}%</td>
+                  <td className="text-right p-2">{d.leads.toLocaleString("fr-FR")}</td>
+                  <td className="text-right p-2">{d.calls}</td>
+                  <td className="text-right p-2">{fmt(safe(d.calls/d.leads*100),1)}%</td>
+                  <td className="text-right p-2">{fmtEur2(safe(d.cost/d.leads))}</td>
+                  <td className="text-right p-2">{fmtEur(safe(d.cost/d.calls))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {report.nonTaggedCost > 0 && (
+            <p className="text-xs text-slate-400 mt-2">
+              Budget non tagué [Groupe] : {fmtEur(report.nonTaggedCost)} ({fmt(report.nonTaggedCost/globalCost*100,1)}%) — campagnes sans convention de nommage.
+            </p>
+          )}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ─── TAB PAR GROUPE ──────────────────────────────────────────────────────────
+function TabParGroupe({ data }) {
+  const { report, matching } = data;
+  const [selected, setSelected] = useState("budget");
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const levierData = useMemo(() => {
+    return ["A","B","C"].map(g => {
+      const bs = report.bodies.filter(b => b.groupe === g);
+      const rev = Object.entries(matching.bodyRevenu).filter(([k]) => k.startsWith(g+"_")).reduce((s,[,v]) => s + v.revenu, 0);
+      const ventes = Object.entries(matching.bodyRevenu).filter(([k]) => k.startsWith(g+"_")).reduce((s,[,v]) => s + v.ventes, 0);
+      return {
+        label: `${g} — ${G_LABEL[g]}`, color: G_COLOR[g], groupe: g,
+        cost:   bs.reduce((s,b) => s+b.cost, 0),
+        leads:  bs.reduce((s,b) => s+b.leads, 0),
+        calls:  bs.reduce((s,b) => s+b.calls, 0),
+        ventes, revenu: rev,
+      };
+    });
+  }, [report, matching]);
+
+  const nonAttrRow = { label:"Non attribué", color:"#94a3b8", groupe:"?", cost: report.nonTaggedCost, leads: report.nonTaggedLeads, calls: report.nonTaggedCalls, ventes: matching.nonAttrVentes, revenu: matching.nonAttrRevenu };
+  const allRows = [...levierData, nonAttrRow];
+
+  const totals = {
+    budget: allRows.reduce((s,r) => s+r.cost, 0),
+    leads: allRows.reduce((s,r) => s+r.leads, 0),
+    calls: allRows.reduce((s,r) => s+r.calls, 0),
+    ventes: allRows.reduce((s,r) => s+r.ventes, 0),
+    revenu: allRows.reduce((s,r) => s+r.revenu, 0),
+  };
+
+  const pieConfigs = {
+    budget: { label:"Budget",  fmtVal: v => fmtEur(v), total: totals.budget, data: allRows.map(r => ({ name: r.label.split(" — ")[0], value: r.cost, pct: safe(r.cost/totals.budget*100), color: r.color })) },
+    leads:  { label:"Leads",   fmtVal: v => v.toLocaleString("fr-FR"), total: totals.leads, data: allRows.map(r => ({ name: r.label.split(" — ")[0], value: r.leads, pct: safe(r.leads/totals.leads*100), color: r.color })) },
+    calls:  { label:"Calls",   fmtVal: v => v, total: totals.calls, data: allRows.map(r => ({ name: r.label.split(" — ")[0], value: r.calls, pct: safe(r.calls/totals.calls*100), color: r.color })) },
+    ventes: { label:"Ventes",  fmtVal: v => v, total: totals.ventes, data: allRows.map(r => ({ name: r.label.split(" — ")[0], value: r.ventes, pct: safe(r.ventes/totals.ventes*100), color: r.color })) },
+    revenu: { label:"CA (€)",  fmtVal: v => fmtEur(v), total: totals.revenu, data: allRows.map(r => ({ name: r.label.split(" — ")[0], value: r.revenu, pct: safe(r.revenu/totals.revenu*100), color: r.color })) },
+  };
+
+  const pie = pieConfigs[selected];
+  const pieData = pie.data.map(d => ({ ...d, fmtVal: pie.fmtVal }));
+  const selectorItems = [
+    { id:"budget",label:"💰 Budget" },{ id:"leads",label:"👤 Leads" },{ id:"calls",label:"📞 Calls" },
+    { id:"ventes",label:"🏆 Ventes" },{ id:"revenu",label:"💵 CA (€)" },
+  ];
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex gap-3 flex-wrap">
+        {selectorItems.map(item => (
+          <button key={item.id} onClick={() => { setSelected(item.id); setActiveIndex(0); }}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-sm ${selected === item.id ? "bg-slate-800 text-white shadow-md scale-105" : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"}`}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-xs text-slate-500 mb-3 font-medium">{pie.label} — répartition par groupe</p>
+          <ResponsiveContainer width="100%" height={260}>
+            <PieChart>
+              <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={100}
+                activeIndex={activeIndex} activeShape={renderActiveShape}
+                onMouseEnter={(_, i) => setActiveIndex(i)}
+                dataKey="value">
+                {pieData.map((d,i) => <Cell key={i} fill={d.color} />)}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-xs text-slate-500 mb-3 font-medium">Tableau récapitulatif</p>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 text-slate-600">
+                <th className="text-left p-1.5">Groupe</th>
+                <th className="text-right p-1.5">Budget</th>
+                <th className="text-right p-1.5"><Abbrev term="CPL">€/lead</Abbrev></th>
+                <th className="text-right p-1.5"><Abbrev term="CPCall">€/call</Abbrev></th>
+                <th className="text-right p-1.5">Ventes</th>
+                <th className="text-right p-1.5">CA</th>
+                <th className="text-right p-1.5">ROAS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allRows.map(row => (
+                <tr key={row.groupe} className="border-t border-slate-50">
+                  <td className="py-1.5">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full" style={{ background: row.color }} />
+                      <span className="font-medium">{row.label.split(" — ")[0]}</span>
+                    </span>
+                  </td>
+                  <td className="text-right py-1.5 text-slate-600">{fmtEur(row.cost)}</td>
+                  <td className="text-right py-1.5 text-slate-600">{row.leads > 0 ? fmtEur2(safe(row.cost/row.leads)) : "—"}</td>
+                  <td className="text-right py-1.5 text-slate-600">{row.calls > 0 ? fmtEur(safe(row.cost/row.calls)) : "—"}</td>
+                  <td className="text-right py-1.5 font-semibold text-slate-700">{row.ventes}</td>
+                  <td className="text-right py-1.5 text-slate-600">{fmtEur(row.revenu)}</td>
+                  <td className="text-right py-1.5 font-bold text-slate-700">{row.cost > 0 && row.revenu > 0 ? `${fmt(row.revenu/row.cost,1)}x` : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-xs text-slate-400 mt-2">★ Ventes &amp; CA = compta interne. Matching {data.matching.matchedCount}/{data.matching.totalVentes} ventes attribuées.</p>
+        </div>
+      </div>
+
+      {/* Vue globale mini-bars */}
+      <Section title="Vue globale — 5 métriques par groupe" sub="% incluent Non attribué — total = 100% par métrique">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {Object.entries(pieConfigs).map(([key, cfg]) => (
+            <div key={key}
+              className={`bg-white rounded-xl border p-4 cursor-pointer transition-all hover:shadow-md ${selected === key ? "border-slate-800 shadow-md ring-2 ring-slate-200" : "border-slate-200"}`}
+              onClick={() => { setSelected(key); setActiveIndex(0); }}>
+              <div className="text-xs font-semibold text-slate-500 uppercase mb-3">{cfg.label}</div>
+              <div className="space-y-2">
+                {cfg.data.map(d => (
+                  <div key={d.name} className="flex items-center gap-2">
+                    <div className="h-1.5 rounded-full flex-shrink-0" style={{ width:`${Math.max(d.pct,1)}%`, minWidth:3, background:d.color }} />
+                    <span className="text-xs text-slate-500 truncate">{d.name}</span>
+                    <span className="text-xs font-semibold text-slate-700 ml-auto flex-shrink-0">{fmt(d.pct,0)}%</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 pt-2 border-t border-slate-100 text-xs text-slate-400 flex justify-between">
+                <span>Total</span>
+                <span className="font-semibold text-green-600">{fmt(cfg.data.reduce((s,d) => s+d.pct,0),1)}%</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-slate-400 mt-2 text-center">★ Ventes &amp; CA = compta interne · "Non attribué" = campagnes sans nommage [Groupe-X] + leads organic</p>
+      </Section>
+    </div>
+  );
+}
+
+// ─── TAB PUBS ────────────────────────────────────────────────────────────────
+function TabPubs({ data }) {
+  const { report, matching } = data;
+  const [groupeFilter, setGroupeFilter] = useState("ALL");
+  const [sortBy, setSortBy] = useState("roas");
+
+  // Merge report bodies with compta matching
+  const pubsData = useMemo(() => {
+    const allBodies = [...report.bodies];
+    // Add non-attributed row
+    if (report.nonTaggedCost > 0) {
+      allBodies.push({ key:"?", groupe:"?", body:"Non attribué", cost: report.nonTaggedCost, leads: report.nonTaggedLeads, calls: report.nonTaggedCalls, salesHyros: report.nonTaggedSales, cog: 0 });
+    }
+    return allBodies.map(b => {
+      const comptaMatch = matching.bodyRevenu[b.key] || { ventes:0, revenu:0 };
+      const roas = b.cost > 0 && comptaMatch.revenu > 0 ? comptaMatch.revenu / b.cost : 0;
+      return {
+        ...b,
+        ventes: comptaMatch.ventes,
+        revenu: comptaMatch.revenu,
+        roas,
+        cpa: comptaMatch.ventes > 0 ? b.cost / comptaMatch.ventes : Infinity,
+        callCvr: b.calls > 0 ? comptaMatch.ventes / b.calls * 100 : 0,
+        cpl: b.leads > 0 ? b.cost / b.leads : 0,
+        color: G_COLOR[b.groupe] || "#94a3b8",
+        nom: b.key === "?" ? "Non attribué (pubs sans tag [Groupe])" : `Groupe ${b.groupe} · Body ${b.body}`,
+      };
+    });
+  }, [report, matching]);
+
+  const filtered = pubsData
+    .filter(p => groupeFilter === "ALL" || p.groupe === groupeFilter)
+    .sort((a,b) => {
+      if (sortBy === "roas")    return b.roas - a.roas;
+      if (sortBy === "ventes")  return b.ventes - a.ventes;
+      if (sortBy === "callCvr") return b.callCvr - a.callCvr;
+      if (sortBy === "budget")  return b.cost - a.cost;
+      if (sortBy === "cpa")     return a.cpa - b.cpa;
+      return 0;
+    });
+
+  const roasSorted = [...filtered].filter(p => p.groupe !== "?").sort((a,b) => b.roas - a.roas);
+  const n = roasSorted.length;
+  const topN = Math.max(1, Math.floor(n * 0.33));
+  const winnerIds = new Set(roasSorted.slice(0, topN).filter(p => p.ventes >= 1).map(p => p.key));
+  const loserIds  = new Set(roasSorted.slice(-topN).filter(p => p.roas < 2 || p.ventes === 0).map(p => p.key));
+  const maxRoas = Math.max(...filtered.filter(p => p.roas > 0).map(p => p.roas), 1);
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Filtres */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="flex gap-2">
+          {["ALL","A","B","C"].map(g => (
+            <button key={g} onClick={() => setGroupeFilter(g)}
+              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${groupeFilter === g ? "bg-slate-800 text-white" : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"}`}>
+              {g === "ALL" ? "Tous" : `Groupe ${g}`}
+            </button>
+          ))}
+        </div>
+        <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+          Trier par :
+          {[{id:"roas",label:"ROAS"},{id:"ventes",label:"Ventes"},{id:"callCvr",label:"Call→Vente"},{id:"cpa",label:"CPA"},{id:"budget",label:"Budget"}].map(opt => (
+            <button key={opt.id} onClick={() => setSortBy(opt.id)}
+              className={`px-3 py-1 rounded-lg font-medium transition-all ${sortBy === opt.id ? "bg-indigo-100 text-indigo-700" : "bg-white border border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <Section title={`Classement par pub — ${filtered.length} entrées`} sub="Revenu = compta interne attribué par matching nom → email → source pub">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 uppercase tracking-wide">
+                <th className="text-left p-3">Body</th>
+                <th className="text-left p-3">Gr.</th>
+                <th className="text-right p-3">Budget</th>
+                <th className="text-right p-3">Leads</th>
+                <th className="text-right p-3">Calls</th>
+                <th className="text-right p-3">V. Hyros</th>
+                <th className="text-right p-3">V. Compta</th>
+                <th className="text-right p-3">CA</th>
+                <th className="text-right p-3">ROAS</th>
+                <th className="text-right p-3"><Abbrev term="CPA">CPA</Abbrev></th>
+                <th className="text-right p-3"><Abbrev term="Call→Vente">C→V</Abbrev></th>
+                <th className="text-right p-3">Statut</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(p => {
+                const isWinner = winnerIds.has(p.key);
+                const isLoser  = loserIds.has(p.key);
+                const roasPct  = maxRoas > 0 ? (p.roas / maxRoas) * 100 : 0;
+                return (
+                  <tr key={p.key} className={`border-b border-slate-100 hover:bg-slate-50 ${isWinner ? "bg-green-50/40" : isLoser ? "bg-rose-50/30" : ""}`}>
+                    <td className="p-3 font-medium text-slate-800 max-w-[160px]">
+                      <div className="truncate">{p.groupe === "?" ? "Non attribué" : `Body ${p.body}`}</div>
+                    </td>
+                    <td className="p-3">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
+                        <span className="font-semibold">{p.groupe}</span>
+                      </span>
+                    </td>
+                    <td className="text-right p-3 text-slate-600">{fmtEur(p.cost)}</td>
+                    <td className="text-right p-3 text-slate-600">{p.leads.toLocaleString("fr-FR")}</td>
+                    <td className="text-right p-3 text-slate-600">{p.calls}</td>
+                    <td className="text-right p-3 text-slate-400">{p.salesHyros}</td>
+                    <td className="text-right p-3 font-semibold text-slate-800">{p.ventes}</td>
+                    <td className="text-right p-3 text-slate-700 font-medium">{p.revenu > 0 ? fmtEur(p.revenu) : "—"}</td>
+                    <td className="text-right p-3">
+                      {p.roas > 0 ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <div className="w-12 bg-slate-100 rounded-full h-1.5">
+                            <div className="h-full rounded-full" style={{ width:`${roasPct}%`, background: isWinner ? "#10b981" : isLoser ? "#f87171" : "#6366f1" }} />
+                          </div>
+                          <span className={`font-bold ${isWinner ? "text-green-600" : isLoser ? "text-rose-500" : "text-slate-700"}`}>{fmt(p.roas,1)}x</span>
+                        </div>
+                      ) : <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="text-right p-3 text-slate-600">{p.ventes > 0 ? fmtEur(p.cpa) : "—"}</td>
+                    <td className="text-right p-3 text-slate-600">{p.callCvr > 0 ? `${fmt(p.callCvr,1)}%` : "—"}</td>
+                    <td className="text-right p-3">
+                      {isWinner && <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold text-[10px]">🏆 Winner</span>}
+                      {isLoser  && <span className="bg-rose-100 text-rose-600 px-2 py-0.5 rounded-full font-semibold text-[10px]">❌ Loser</span>}
+                      {!isWinner && !isLoser && p.groupe !== "?" && <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-[10px]">— Neutre</span>}
+                      {p.groupe === "?" && <span className="bg-amber-100 text-amber-600 px-2 py-0.5 rounded-full text-[10px]">⚠️ Non tagué</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-4 text-xs text-slate-400">
+          <span>Winner = top 33% ROAS + ≥1 vente · Loser = bas 33% ROAS &lt; 2x ou 0 vente</span>
+          <span>V. Hyros = attribution Hyros (partielle) · V. Compta = matching nom→pub (plus fiable)</span>
+        </div>
+      </Section>
+
+      {/* Top performers */}
+      <Section title="Top 5 bodies par ROAS compta">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[...pubsData].filter(p => p.roas > 0 && p.groupe !== "?").sort((a,b) => b.roas - a.roas).slice(0,6).map((p,i) => (
+            <div key={p.key} className={`rounded-xl border p-4 ${i < 2 ? "border-green-300 bg-green-50" : "border-slate-200 bg-white"}`}>
+              <div className="flex items-start justify-between mb-2">
+                <div>
+                  <span className="text-sm font-bold text-slate-800">{i < 2 ? "⭐ " : ""}Body {p.body}</span>
+                  <div className="text-xs text-slate-400">Groupe {p.groupe} · {G_LABEL[p.groupe]}</div>
+                </div>
+                <span className={`text-xl font-bold ${i < 2 ? "text-green-600" : "text-slate-700"}`}>{fmt(p.roas,1)}x</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-white rounded-lg p-2 border border-slate-100">
+                  <div className="text-[10px] text-slate-400">Ventes</div>
+                  <div className="font-bold text-slate-700">{p.ventes}</div>
+                </div>
+                <div className="bg-white rounded-lg p-2 border border-slate-100">
+                  <div className="text-[10px] text-slate-400">CA</div>
+                  <div className="font-bold text-slate-700">{fmtEur(p.revenu)}</div>
+                </div>
+                <div className="bg-white rounded-lg p-2 border border-slate-100">
+                  <div className="text-[10px] text-slate-400"><Abbrev term="Call→Vente">C→V</Abbrev></div>
+                  <div className="font-bold text-slate-700">{p.callCvr > 0 ? `${fmt(p.callCvr,1)}%` : "—"}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ─── TAB ANALYSE ─────────────────────────────────────────────────────────────
+function TabAnalyse({ data }) {
+  const [openSection, setOpenSection] = useState("points_forts");
+  const [openReco, setOpenReco] = useState(null);
+
+  const { report, matching } = data;
+  const { totalVentes, totalRevenu, retracts, nonAttrVentes, matchedCount } = matching;
+  const ROAS = safe(totalRevenu / report.globalCost);
+  const CALL_CVR = safe(totalVentes / report.globalCalls * 100);
+
+  // Best groupe by call→vente
+  const groupeCallCvr = ["A","B","C"].map(g => {
+    const bs = report.bodies.filter(b => b.groupe === g);
+    const calls = bs.reduce((s,b) => s+b.calls, 0);
+    const ventes = Object.entries(matching.bodyRevenu).filter(([k]) => k.startsWith(g+"_")).reduce((s,[,v]) => s+v.ventes, 0);
+    return { g, calls, ventes, cvr: safe(ventes/calls*100) };
+  }).sort((a,b) => b.cvr - a.cvr);
+
+  const bestG = groupeCallCvr[0];
+  const worstG = groupeCallCvr[groupeCallCvr.length-1];
+  const nonAttrPct = Math.round(nonAttrVentes/totalVentes*100);
+  const retractPct = fmt(retracts/(retracts+totalVentes)*100, 1);
+
+  const sections = [
+    {
+      id: "points_forts", icon: "✅", label: "Points forts",
+      color: "bg-green-50 border-green-200",
+      headerColor: "bg-green-100 text-green-800 border-green-200 hover:bg-green-200",
+      tagColor: "bg-green-200 text-green-800",
+      items: [
+        { title: `ROAS ${fmt(ROAS,2)}x — campagne rentable`, desc: `Pour ${fmtEur(report.globalCost)} investis, la compta enregistre ${fmtEur(totalRevenu)} de revenu effectif. Le seuil de rentabilité sur du high-ticket est typiquement 2.5–3x. Marge confortable pour scaler.` },
+        { title: `Call → Vente : ${fmt(CALL_CVR,1)}% — taux solide`, desc: `${totalVentes} ventes effectives pour ${report.globalCalls} calls bookés. Un taux >15% sur ce type de produit est au-dessus de la norme du secteur (10–12%). Bonne qualification en amont et script closing performant.` },
+        { title: `Groupe ${bestG.g} — meilleur taux call→vente (${fmt(bestG.cvr,1)}%)`, desc: `Groupe ${bestG.g} convertit ${fmt(bestG.cvr,1)}% de ses calls en ventes — contre ${fmt(worstG.cvr,1)}% pour Groupe ${worstG.g}. À budget et volume égaux, ${bestG.g} génère proportionnellement plus de revenus.` },
+        { title: `Attribution réelle : ${matchedCount}/${totalVentes} ventes tracées à leur pub source`, desc: `Matching nom compta → email Hyros → source pub permet d'attribuer ${matchedCount} ventes avec certitude. Chaque vente est rattachée à son Body source pour un ROAS pub-niveau fiable.` },
+      ],
+    },
+    {
+      id: "vigilance", icon: "⚠️", label: "Vigilance",
+      color: "bg-amber-50 border-amber-200",
+      headerColor: "bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-200",
+      tagColor: "bg-amber-200 text-amber-800",
+      items: [
+        { title: `Groupe ${worstG.g} : taux call→vente le plus faible (${fmt(worstG.cvr,1)}%)`, desc: `Groupe ${worstG.g} a le plus faible taux de closing. Scaler ce groupe sans corriger cet écart dégrade mécaniquement le ROAS global.` },
+        { title: `Rétractations : ${retractPct}% — à monitorer par closeuse`, desc: `${retracts} rétractations détectées automatiquement dans le fichier compta (libellé "rétractation" dans le nom). Sans analyse par closeuse, impossible de distinguer un problème de script ou de timing encaissement.` },
+        { title: `${nonAttrPct}% des ventes non attribuées à une pub`, desc: `${nonAttrVentes} ventes sur ${totalVentes} sans attribution pub. Causes : campagnes Meta sans convention de nommage [Groupe-X], ou clientes absentes de Hyros. Résolu dès que le naming est normalisé.` },
+      ],
+    },
+    {
+      id: "opportunites", icon: "🚀", label: "Opportunités",
+      color: "bg-blue-50 border-blue-200",
+      headerColor: "bg-blue-100 text-blue-800 border-blue-200 hover:bg-blue-200",
+      tagColor: "bg-blue-200 text-blue-800",
+      items: [
+        { title: `Scaler Groupe ${bestG.g} — meilleur call→vente, potentiellement sous-budgété`, desc: `Groupe ${bestG.g} a le meilleur taux de closing (${fmt(bestG.cvr,1)}%). Augmenter progressivement son budget par paliers de 20% en mesurant la stabilité du CPL.` },
+        { title: "Relances post-immersion : planifier J+7, J+14, J+21", desc: `Une séquence email de relance structurée sur les leads non convertis peut générer du revenu supplémentaire sans coût pub additionnel.` },
+        { title: "Normaliser le naming campagnes Meta", desc: `Renommer toutes les campagnes avec le préfixe [Groupe-X][Body-XX]. Résout les ${nonAttrVentes} ventes "Non attribué" dès la prochaine campagne.` },
+      ],
+    },
+  ];
+
+  const recos = [
+    { n:1, tag:"Budget", desc:`Augmenter le budget Groupe ${bestG.g} (meilleur call→vente).`, detail:`Tester +30% de budget par semaine (paliers), mesurer si le CPL se maintient. Si stable à x2 du budget, réallouer progressivement depuis le groupe le moins performant.` },
+    { n:2, tag:"Naming", desc:"Renommer toutes les campagnes Meta avec [Groupe-X] et [Body-XX].", detail:`Action dans Meta Ads Manager : renommer chaque campagne active. Exemple : "broad-35-60-ans-france" → "[Groupe-C] broad-35-60-ans-france [Body C2]". Résout les ${nonAttrVentes} ventes "Non attribué" dès la prochaine campagne.` },
+    { n:3, tag:"Rétractations", desc:`Analyser les ${retracts} rétractations par closeuse et par créa d'entrée.`, detail:`Croiser le fichier compta (noms avec "rétractation") avec la closeuse responsable et la campagne source. Objectif : passer sous 5% de taux de rétractation.` },
+    { n:4, tag:"Fenêtre attribution", desc:"Étendre la fenêtre compta à J+28 après arrêt des pubs.", detail:`Analyser les résultats au moins 4 semaines après l'arrêt des pubs pour capturer toutes les ventes issues des relances et de la maturation des leads.` },
+  ];
+
+  return (
+    <div className="p-6 space-y-6">
+      <Section title="Analyse détaillée">
+        <div className="space-y-3">
+          {sections.map(sec => (
+            <div key={sec.id} className={`rounded-xl border ${sec.color}`}>
+              <button className={`w-full flex items-center justify-between px-4 py-3 rounded-xl font-semibold text-sm transition-all ${sec.headerColor}`}
+                onClick={() => setOpenSection(openSection === sec.id ? null : sec.id)}>
+                <span className="flex items-center gap-2">
+                  <span>{sec.icon}</span><span>{sec.label}</span>
+                  <span className="text-xs font-normal opacity-60">({sec.items.length} insights)</span>
+                </span>
+                <span className="text-lg">{openSection === sec.id ? "▲" : "▼"}</span>
+              </button>
+              {openSection === sec.id && (
+                <div className="px-4 pb-4 pt-2 space-y-3">
+                  {sec.items.map((item,i) => (
+                    <div key={i} className="bg-white rounded-lg border border-white/60 p-3 shadow-sm">
+                      <div className="flex items-start gap-2">
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${sec.tagColor}`}>{sec.icon}</span>
+                        <div>
+                          <div className="font-semibold text-slate-800 text-sm">{item.title}</div>
+                          <div className="text-xs text-slate-600 mt-1 leading-relaxed">{item.desc}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="Recommandations prioritaires">
+        <div className="space-y-3">
+          {recos.map(r => (
+            <div key={r.n} className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="flex gap-4 items-start">
+                <div className="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-100 text-indigo-700 font-bold text-sm flex items-center justify-center">{r.n}</div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{r.tag}</span>
+                    <span className="text-xs text-slate-700 font-medium">{r.desc}</span>
+                    <button onClick={() => setOpenReco(openReco === r.n ? null : r.n)}
+                      className="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 text-xs font-bold flex items-center justify-center hover:bg-indigo-200 transition-colors">ℹ</button>
+                  </div>
+                  {openReco === r.n && (
+                    <div className="mt-3 text-xs text-slate-600 bg-indigo-50 border border-indigo-100 rounded-lg p-3 leading-relaxed">{r.detail}</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ─── DATA QUALITY CHIP ───────────────────────────────────────────────────────
+function DataQualityChip({ meta }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 px-2.5 py-1 rounded-full text-xs transition-colors">
+        <span className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
+        <span className="font-medium">Data Quality</span>
+        <span className="text-slate-400">{meta.matching} match</span>
+        <span className="text-slate-300">▾</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-72 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-3 text-xs space-y-2">
+          <div className="font-semibold text-slate-700 mb-1">Sources & Périodes</div>
+          <div className="flex justify-between text-slate-600">
+            <span className="text-slate-400">Période Ads (Hyros)</span>
+            <span className="font-medium">{meta.periodeAds}</span>
+          </div>
+          <div className="flex justify-between text-slate-600">
+            <span className="text-slate-400">Période ventes (Compta)</span>
+            <span className="font-medium">{meta.periodeCompta}</span>
+          </div>
+          <div className="flex justify-between text-slate-600">
+            <span className="text-slate-400">Taux d'attribution</span>
+            <span className="font-semibold text-green-600">{meta.matching}</span>
+          </div>
+          <div className="border-t border-slate-100 pt-2 text-[10px] text-slate-400 leading-relaxed">
+            Budget & KPIs pub = Report Hyros · Ventes & CA = compta interne · Attribution = matching nom→email→source
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TAB COMPARAISON ─────────────────────────────────────────────────────────
+function TabComparaison({ savedCampaigns, onDelete }) {
+  if (savedCampaigns.length < 2) {
+    return (
+      <div className="p-12 text-center text-slate-400 space-y-3">
+        <div className="text-4xl">📊</div>
+        <div className="text-sm font-medium text-slate-500">Comparaison disponible dès 2 campagnes sauvegardées</div>
+        <div className="text-xs">Sauvegardez la campagne active depuis l'en-tête, puis importez une nouvelle campagne.</div>
+        <div className="mt-4 flex flex-wrap gap-2 justify-center">
+          {savedCampaigns.map(c => (
+            <div key={c.id} className="bg-white border border-slate-200 rounded-xl px-4 py-2 text-xs font-semibold text-slate-700 flex items-center gap-2">
+              🏁 {c.name}
+              <button onClick={() => onDelete(c.id)} className="text-slate-300 hover:text-rose-400 transition-colors">✕</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const [idA, setIdA] = useState(savedCampaigns[0].id);
+  const [idB, setIdB] = useState(savedCampaigns[1].id);
+  const A = savedCampaigns.find(c => c.id === idA);
+  const B = savedCampaigns.find(c => c.id === idB);
+  if (!A || !B) return null;
+
+  const delta = (a, b, lowerIsBetter = false) => {
+    if (!a || !b || a === 0) return null;
+    const pct = ((b - a) / Math.abs(a)) * 100;
+    const improved = lowerIsBetter ? pct < 0 : pct > 0;
+    return { pct, improved };
+  };
+
+  const DeltaCell = ({ a, b, lowerIsBetter = false, fmt: fmtFn = v => v }) => {
+    const d = delta(a, b, lowerIsBetter);
+    if (d === null) return <td className="text-center p-3 text-slate-300">—</td>;
+    const color = d.improved ? "text-green-600" : "text-rose-500";
+    const bg    = d.improved ? "bg-green-50"   : "bg-rose-50";
+    return (
+      <td className={`text-center p-3 ${bg}`}>
+        <span className={`font-bold text-sm ${color}`}>
+          {d.pct > 0 ? "+" : ""}{d.pct.toFixed(1)}%
+        </span>
+      </td>
+    );
+  };
+
+  const am = A.data.matching, bm = B.data.matching;
+  const ar = A.data.report,   br = B.data.report;
+
+  const rows = [
+    { label:"Budget dépensé", a: ar.globalCost,     b: br.globalCost,     fmt: fmtEur,   lowerIsBetter: true  },
+    { label:"Leads",          a: ar.globalLeads,    b: br.globalLeads,    fmt: v => v.toLocaleString("fr-FR") },
+    { label:"Calls bookés",   a: ar.globalCalls,    b: br.globalCalls,    fmt: v => v },
+    { label:"Ventes effectives", a: am.totalVentes, b: bm.totalVentes,    fmt: v => v },
+    { label:"Rétractations",  a: am.retracts,       b: bm.retracts,       fmt: v => v,   lowerIsBetter: true  },
+    { label:"Revenu effectif",a: am.totalRevenu,    b: bm.totalRevenu,    fmt: fmtEur },
+    { label:"ROAS global",    a: safe(am.totalRevenu/ar.globalCost), b: safe(bm.totalRevenu/br.globalCost), fmt: v => `${fmt(v,2)}x` },
+    { label:"CPA",            a: safe(ar.globalCost/am.totalVentes), b: safe(br.globalCost/bm.totalVentes), fmt: fmtEur, lowerIsBetter: true },
+    { label:"CPCall",         a: safe(ar.globalCost/ar.globalCalls), b: safe(br.globalCost/br.globalCalls), fmt: fmtEur, lowerIsBetter: true },
+    { label:"Panier moyen",   a: safe(am.totalRevenu/am.totalVentes),b: safe(bm.totalRevenu/bm.totalVentes),fmt: fmtEur },
+    { label:"Call→Vente CVR", a: safe(am.totalVentes/ar.globalCalls*100), b: safe(bm.totalVentes/br.globalCalls*100), fmt: v => `${fmt(v,1)}%` },
+    { label:"Lead→Vente CVR", a: safe(am.totalVentes/ar.globalLeads*100), b: safe(bm.totalVentes/br.globalLeads*100), fmt: v => `${fmt(v,2)}%` },
+    { label:"Taux matching",  a: safe(am.matchedCount/am.totalVentes*100), b: safe(bm.matchedCount/bm.totalVentes*100), fmt: v => `${fmt(v,0)}%` },
+    { label:"Rétractation %", a: safe(am.retracts/(am.retracts+am.totalVentes)*100), b: safe(bm.retracts/(bm.retracts+bm.totalVentes)*100), fmt: v => `${fmt(v,1)}%`, lowerIsBetter: true },
+  ];
+
+  // Stable winners — bodies top 33% dans les 2 campagnes
+  const getTopBodies = (data) => {
+    const all = Object.entries(data.matching.bodyRevenu)
+      .map(([key, v]) => ({ key, roas: safe(v.revenu / (data.report.bodies.find(b=>b.key===key)?.cost||Infinity)) }))
+      .filter(b => b.roas > 0).sort((a,b) => b.roas - a.roas);
+    const n = Math.max(1, Math.floor(all.length * 0.33));
+    return new Set(all.slice(0,n).map(b => b.key));
+  };
+  const topA = getTopBodies(A.data);
+  const topB = getTopBodies(B.data);
+  const stable = [...topA].filter(k => topB.has(k));
+
+  const groups = [
+    { label: "💰 Volume & Investissement", rows: rows.slice(0,4) },
+    { label: "📈 Revenu & Rentabilité",   rows: rows.slice(5,9) },
+    { label: "🎯 Conversion & Qualité",   rows: rows.slice(9,14) },
+  ];
+
+  return (
+    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      {/* Sélecteurs campagnes */}
+      <div className="grid grid-cols-3 gap-4 items-center">
+        <div className="space-y-1">
+          <div className="text-xs text-slate-500 font-medium uppercase">Campagne A</div>
+          <select value={idA} onChange={e => setIdA(e.target.value)}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 bg-white focus:ring-2 focus:ring-indigo-300 outline-none">
+            {savedCampaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="text-center text-2xl text-slate-300">⇄</div>
+        <div className="space-y-1">
+          <div className="text-xs text-slate-500 font-medium uppercase">Campagne B</div>
+          <select value={idB} onChange={e => setIdB(e.target.value)}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 bg-white focus:ring-2 focus:ring-indigo-300 outline-none">
+            {savedCampaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Légende Δ */}
+      <div className="flex gap-4 text-xs text-slate-500">
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-50 border border-green-200" /> Amélioration vs A</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-rose-50 border border-rose-200" /> Dégradation vs A</span>
+        <span className="ml-auto text-slate-400">Δ = (B − A) / |A| en %</span>
+      </div>
+
+      {/* Tableau comparatif par groupe de métriques */}
+      {groups.map(g => (
+        <div key={g.label} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200">{g.label}</div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-slate-400 border-b border-slate-100">
+                <th className="text-left p-3 w-44">Métrique</th>
+                <th className="text-center p-3 text-indigo-600 font-semibold">{A.name}</th>
+                <th className="text-center p-3 text-purple-600 font-semibold">{B.name}</th>
+                <th className="text-center p-3">Δ B vs A</th>
+              </tr>
+            </thead>
+            <tbody>
+              {g.rows.map((row,i) => (
+                <tr key={row.label} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? "" : "bg-slate-50/30"}`}>
+                  <td className="p-3 text-xs font-medium text-slate-600">{row.label}</td>
+                  <td className="text-center p-3 font-semibold text-slate-800">{row.fmt(row.a)}</td>
+                  <td className="text-center p-3 font-semibold text-slate-800">{row.fmt(row.b)}</td>
+                  <DeltaCell a={row.a} b={row.b} lowerIsBetter={row.lowerIsBetter} fmt={row.fmt} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+
+      {/* Stable Winners */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="text-xs font-semibold text-slate-600 uppercase mb-3">🏆 Bodies stables — Top 33% dans les deux campagnes</div>
+        {stable.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {stable.map(k => {
+              const g = k.split("_")[0];
+              return (
+                <span key={k} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
+                  style={{ background: G_COLOR[g] + "20", color: G_COLOR[g] }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: G_COLOR[g] }} />
+                  {k}
+                </span>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-xs text-slate-400 italic">Aucun body commun dans le top 33% des deux campagnes — structure différente.</div>
+        )}
+        <div className="text-[10px] text-slate-400 mt-2">Ces bodies sont à conserver prioritairement pour la prochaine campagne.</div>
+      </div>
+
+      {/* Gestion campagnes */}
+      <div className="flex flex-wrap gap-2 pt-2">
+        <span className="text-xs text-slate-400 self-center">Campagnes sauvegardées :</span>
+        {savedCampaigns.map(c => (
+          <div key={c.id} className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-medium text-slate-700 flex items-center gap-2">
+            {c.name}
+            <button onClick={() => onDelete(c.id)} className="text-slate-300 hover:text-rose-400 transition-colors text-xs">✕</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── HELPERS DATE ────────────────────────────────────────────────────────────
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit", year:"numeric" })
+    + " à " + d.toLocaleTimeString("fr-FR", { hour:"2-digit", minute:"2-digit" });
+}
+
+function csvPreview(text, maxRows = 100) {
+  if (!text) return { headers: [], rows: [] };
+  const lines = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n").filter(l => l.trim());
+  const sep = lines[0]?.includes(";") ? ";" : ",";
+  const headers = lines[0].split(sep).map(h => h.replace(/^\uFEFF/,"").trim().replace(/^"|"$/g,""));
+  const rows = lines.slice(1, maxRows + 1).map(l =>
+    l.split(sep).map(v => v.trim().replace(/^"|"$/g,""))
+  );
+  return { headers, rows, sep, totalLines: lines.length - 1 };
+}
+
+// ─── MODAL APERÇU CSV ────────────────────────────────────────────────────────
+function CsvPreviewModal({ label, preview, onClose }) {
+  if (!preview) return null;
+  const { headers, rows, totalLines } = preview;
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <div>
+            <div className="font-bold text-slate-800 text-sm">{label}</div>
+            <div className="text-xs text-slate-400 mt-0.5">
+              Aperçu {rows.length} / {totalLines} lignes · {headers.length} colonnes
+            </div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 text-lg transition-colors">✕</button>
+        </div>
+        <div className="overflow-auto flex-1 p-4">
+          <table className="w-full text-xs border-collapse">
+            <thead className="sticky top-0">
+              <tr className="bg-slate-800 text-white">
+                <th className="px-2 py-1.5 text-left font-medium text-slate-300 w-8">#</th>
+                {headers.map((h,i) => (
+                  <th key={i} className="px-2 py-1.5 text-left font-medium whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, ri) => (
+                <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                  <td className="px-2 py-1 text-slate-300 text-[10px]">{ri + 1}</td>
+                  {headers.map((_, ci) => (
+                    <td key={ci} className="px-2 py-1 text-slate-700 max-w-[200px] truncate" title={row[ci]}>{row[ci] || ""}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {totalLines > rows.length && (
+            <div className="mt-3 text-xs text-slate-400 text-center italic">
+              … {totalLines - rows.length} lignes supplémentaires non affichées (aperçu limité à {rows.length} lignes)
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MODAL CONFIRMATION SUPPRESSION ─────────────────────────────────────────
+function ConfirmDeleteModal({ name, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl p-6 w-80 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center flex-shrink-0 text-xl">🗑️</div>
+          <div>
+            <div className="text-sm font-bold text-slate-800">Supprimer cette campagne ?</div>
+            <div className="text-xs text-slate-500 mt-1">
+              <span className="font-semibold text-slate-700">"{name}"</span> sera définitivement supprimée. Cette action est irréversible.
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onCancel}
+            className="flex-1 border border-slate-200 text-slate-600 py-2 rounded-xl text-sm hover:bg-slate-50 transition-colors">
+            Annuler
+          </button>
+          <button onClick={onConfirm}
+            className="flex-1 bg-rose-600 text-white py-2 rounded-xl text-sm font-semibold hover:bg-rose-700 transition-colors">
+            Supprimer définitivement
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TAB HISTORIQUE ──────────────────────────────────────────────────────────
+function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoComparaison, onLoad }) {
+  const [editingId, setEditingId]       = useState(null);
+  const [editName, setEditName]         = useState("");
+  const [expandedId, setExpandedId]     = useState(null);
+  const [previewCsv, setPreviewCsv]     = useState(null);
+  const [reimportId, setReimportId]     = useState(null);
+  const [reimportFiles, setReimportFiles] = useState({ report: null, compta: null, nomMails: null });
+  const [deleteTarget, setDeleteTarget] = useState(null); // { id, name }
+
+  const CSV_DEFS = [
+    { key:"report",   label:"Reporting Ads Hyros",            icon:"📊" },
+    { key:"compta",   label:"Suivi ventes Lioness Closing",   icon:"📋" },
+    { key:"nomMails", label:"Export Sales Hyros",             icon:"👤" },
+  ];
+
+  const handleReimportFile = useCallback((key, text, name) => {
+    setReimportFiles(prev => ({ ...prev, [key]: { text, name, preview: csvPreview(text) } }));
+  }, []);
+
+  const confirmReimport = (campaign) => {
+    const allLoaded = reimportFiles.report && reimportFiles.compta && reimportFiles.nomMails;
+    if (!allLoaded) return;
+    try {
+      const report   = parseHyrosReport(reimportFiles.report.text);
+      const compta   = parseCompta(reimportFiles.compta.text);
+      const nomMails = parseHyrosNomMails(reimportFiles.nomMails.text);
+      const matching = matchSalesToPubs(compta, nomMails);
+      const csvMeta  = {
+        report:   { name: reimportFiles.report.name,   size: reimportFiles.report.text.length,   uploadedAt: new Date().toISOString(), preview: csvPreview(reimportFiles.report.text) },
+        compta:   { name: reimportFiles.compta.name,   size: reimportFiles.compta.text.length,   uploadedAt: new Date().toISOString(), preview: csvPreview(reimportFiles.compta.text) },
+        nomMails: { name: reimportFiles.nomMails.name, size: reimportFiles.nomMails.text.length, uploadedAt: new Date().toISOString(), preview: csvPreview(reimportFiles.nomMails.text) },
+      };
+      onReimport(campaign.id, { report, matching }, csvMeta);
+      setReimportId(null);
+      setReimportFiles({ report: null, compta: null, nomMails: null });
+    } catch(e) { alert("Erreur parsing CSV : " + e.message); }
+  };
+
+  if (savedCampaigns.length === 0) {
+    return (
+      <div className="p-12 text-center space-y-3">
+        <div className="text-4xl">🗂️</div>
+        <div className="text-sm font-medium text-slate-500">Aucune campagne sauvegardée</div>
+        <div className="text-xs text-slate-400">Importez des fichiers CSV puis cliquez sur 💾 Sauvegarder pour créer votre première entrée.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto space-y-4">
+      {/* En-tête */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide">Historique des campagnes</h2>
+          <p className="text-xs text-slate-400 mt-0.5">{savedCampaigns.length} campagne{savedCampaigns.length > 1 ? "s" : ""} sauvegardée{savedCampaigns.length > 1 ? "s" : ""}</p>
+        </div>
+        {savedCampaigns.length >= 2 && (
+          <button onClick={onGoComparaison}
+            className="flex items-center gap-2 bg-purple-100 text-purple-700 px-3 py-1.5 rounded-xl text-xs font-semibold hover:bg-purple-200 transition-colors">
+            ⇄ Comparer les campagnes
+          </button>
+        )}
+      </div>
+
+      {/* Liste campagnes */}
+      {[...savedCampaigns].reverse().map(c => {
+        const roas = safe(c.data.matching.totalRevenu / c.data.report.globalCost);
+        const isExpanded  = expandedId === c.id;
+        const isEditing   = editingId  === c.id;
+        const isReimport  = reimportId === c.id;
+        const allReloaded = reimportFiles.report && reimportFiles.compta && reimportFiles.nomMails;
+
+        return (
+          <div key={c.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            {/* En-tête de la fiche */}
+            <div className="px-5 py-4 flex items-center gap-4">
+              <div className="flex-1 min-w-0">
+                {isEditing ? (
+                  <div className="flex items-center gap-2">
+                    <input value={editName} onChange={e => setEditName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") { onRename(c.id, editName); setEditingId(null); } if (e.key === "Escape") setEditingId(null); }}
+                      autoFocus
+                      className="border border-indigo-300 rounded-lg px-3 py-1 text-sm font-semibold focus:ring-2 focus:ring-indigo-300 outline-none w-64" />
+                    <button onClick={() => { onRename(c.id, editName); setEditingId(null); }}
+                      className="bg-indigo-600 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-indigo-700">✓ OK</button>
+                    <button onClick={() => setEditingId(null)} className="text-slate-400 hover:text-slate-600 text-xs px-2">✕</button>
+                  </div>
+                ) : (
+                  <div className="font-bold text-slate-800 text-base truncate">{c.name}</div>
+                )}
+                <div className="flex flex-wrap items-center gap-3 mt-1 text-xs text-slate-400">
+                  <span>💾 Sauvegardé le {fmtDate(c.savedAt)}</span>
+                  {c.importedAt && <span>📥 Importé le {fmtDate(c.importedAt)}</span>}
+                </div>
+              </div>
+
+              {/* KPIs mini */}
+              <div className="hidden md:flex items-center gap-3 text-xs flex-shrink-0">
+                <div className="text-center">
+                  <div className="text-slate-400">Budget</div>
+                  <div className="font-bold text-slate-700">{fmtEur(c.data.report.globalCost)}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-slate-400">Ventes</div>
+                  <div className="font-bold text-slate-700">{c.data.matching.totalVentes}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-slate-400">CA brut</div>
+                  <div className="font-bold text-slate-700">{fmtEur(c.data.matching.totalRevenu)}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-slate-400">ROAS</div>
+                  <div className={`font-bold ${roas >= 8 ? "text-green-600" : roas >= 4 ? "text-amber-600" : "text-rose-500"}`}>{fmt(roas,2)}x</div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {onLoad && (
+                  <button onClick={() => onLoad(c)}
+                    className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs hover:bg-indigo-700 transition-colors font-semibold">
+                    ▶ Charger
+                  </button>
+                )}
+                <button onClick={() => { setExpandedId(isExpanded ? null : c.id); setReimportId(null); }}
+                  className="bg-slate-100 text-slate-600 px-2.5 py-1.5 rounded-lg text-xs hover:bg-slate-200 transition-colors font-medium">
+                  {isExpanded ? "▲ Réduire" : "▼ Détails"}
+                </button>
+                <button onClick={() => { setEditingId(c.id); setEditName(c.name); }}
+                  className="bg-indigo-50 text-indigo-600 px-2.5 py-1.5 rounded-lg text-xs hover:bg-indigo-100 transition-colors font-medium">
+                  ✏️ Renommer
+                </button>
+                <button onClick={() => setDeleteTarget({ id: c.id, name: c.name })}
+                  className="bg-rose-50 text-rose-600 px-2.5 py-1.5 rounded-lg text-xs hover:bg-rose-100 transition-colors font-medium">
+                  🗑️ Supprimer
+                </button>
+              </div>
+            </div>
+
+            {/* Section expandée */}
+            {isExpanded && (
+              <div className="border-t border-slate-100 bg-slate-50">
+                {/* KPIs détaillés */}
+                <div className="px-5 py-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { label:"Budget", value: fmtEur(c.data.report.globalCost), color:"slate" },
+                    { label:"Leads",  value: c.data.report.globalLeads?.toLocaleString("fr-FR") || "—", color:"indigo" },
+                    { label:"Calls",  value: c.data.report.globalCalls || "—", color:"purple" },
+                    { label:"Ventes effectives", value: c.data.matching.totalVentes, color:"green" },
+                    { label:"Rétractations", value: `-${c.data.matching.retracts}`, color:"rose" },
+                    { label:"CA effectif",   value: fmtEur(c.data.matching.totalRevenu), color:"green" },
+                    { label:"ROAS",   value: `${fmt(roas,2)}x`, color: roas >= 8 ? "green" : roas >= 4 ? "amber" : "rose" },
+                    { label:"Matching",value: `${c.data.matching.matchedCount}/${c.data.matching.totalVentes}`, color:"slate" },
+                  ].map((k,i) => (
+                    <div key={i} className="bg-white rounded-xl border border-slate-200 p-3 text-center">
+                      <div className="text-[10px] text-slate-400 uppercase">{k.label}</div>
+                      <div className={`font-bold text-sm mt-0.5 ${k.color === "green" ? "text-green-600" : k.color === "rose" ? "text-rose-500" : k.color === "amber" ? "text-amber-600" : k.color === "indigo" ? "text-indigo-600" : k.color === "purple" ? "text-purple-600" : "text-slate-800"}`}>{k.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Fichiers CSV */}
+                <div className="px-5 pb-4">
+                  <div className="text-xs font-semibold text-slate-500 uppercase mb-2">Fichiers CSV associés</div>
+                  {c.csvMeta ? (
+                    <div className="space-y-2">
+                      {CSV_DEFS.map(def => {
+                        const meta = c.csvMeta[def.key];
+                        if (!meta) return null;
+                        const sizeKb = Math.round(meta.size / 1024);
+                        const prev = meta.preview;
+                        return (
+                          <div key={def.key} className="bg-white rounded-xl border border-slate-200 px-4 py-3 flex items-center gap-3">
+                            <span className="text-lg flex-shrink-0">{def.icon}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-semibold text-slate-700 truncate">{meta.name}</div>
+                              <div className="text-[10px] text-slate-400 mt-0.5">
+                                {sizeKb} Ko · {prev?.totalLines || "?"} lignes · {prev?.headers?.length || "?"} colonnes · Uploadé le {fmtDate(meta.uploadedAt)}
+                              </div>
+                            </div>
+                            {prev && (
+                              <button onClick={() => setPreviewCsv({ label: `${def.label} — ${meta.name}`, preview: prev })}
+                                className="flex-shrink-0 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-indigo-100 transition-colors">
+                                👁️ Aperçu
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400 italic bg-white rounded-xl border border-slate-200 px-4 py-3">
+                      Fichiers CSV non disponibles pour cette campagne.
+                    </div>
+                  )}
+
+                  {/* Ré-import */}
+                  <div className="mt-4">
+                    {!isReimport ? (
+                      <button onClick={() => { setReimportId(c.id); setReimportFiles({ report:null, compta:null, nomMails:null }); }}
+                        className="flex items-center gap-2 bg-amber-50 text-amber-700 border border-amber-200 px-3 py-2 rounded-xl text-xs font-semibold hover:bg-amber-100 transition-colors">
+                        🔄 Ré-importer les CSV (remplace les données)
+                      </button>
+                    ) : (
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+                        <div className="text-xs font-semibold text-amber-800">🔄 Ré-import — {c.name}</div>
+                        <div className="text-xs text-amber-600">Importez les 3 nouveaux fichiers CSV. Les données et aperçus seront remplacés.</div>
+                        <div className="grid grid-cols-1 gap-2">
+                          {CSV_DEFS.map(def => (
+                            <label key={def.key} className={`flex items-center gap-3 rounded-xl border-2 border-dashed px-3 py-2 cursor-pointer transition-all
+                              ${reimportFiles[def.key] ? "border-green-400 bg-green-50" : "border-slate-300 bg-white hover:border-indigo-300"}`}>
+                              <input type="file" accept=".csv" className="hidden"
+                                onChange={e => {
+                                  const file = e.target.files[0];
+                                  if (!file) return;
+                                  const reader = new FileReader();
+                                  reader.onload = ev => handleReimportFile(def.key, ev.target.result, file.name);
+                                  reader.readAsText(file, "utf-8");
+                                }} />
+                              <span className="text-base">{reimportFiles[def.key] ? "✅" : def.icon}</span>
+                              <div>
+                                <div className="text-xs font-semibold text-slate-700">{def.label}</div>
+                                {reimportFiles[def.key] && <div className="text-[10px] text-green-600">{reimportFiles[def.key].name}</div>}
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={() => { setReimportId(null); setReimportFiles({ report:null, compta:null, nomMails:null }); }}
+                            className="flex-1 border border-slate-200 text-slate-600 py-2 rounded-xl text-xs hover:bg-slate-50">Annuler</button>
+                          <button onClick={() => confirmReimport(c)} disabled={!allReloaded}
+                            className="flex-1 bg-amber-600 text-white py-2 rounded-xl text-xs font-semibold hover:bg-amber-700 disabled:opacity-40 transition-colors">
+                            ✓ Confirmer le remplacement
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Modal aperçu CSV */}
+      {previewCsv && (
+        <CsvPreviewModal label={previewCsv.label} preview={previewCsv.preview} onClose={() => setPreviewCsv(null)} />
+      )}
+
+      {/* Modal confirmation suppression */}
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          name={deleteTarget.name}
+          onConfirm={() => { onDelete(deleteTarget.id); setDeleteTarget(null); }}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── APP ─────────────────────────────────────────────────────────────────────
+const TABS = [
+  { id:"dashboard", label:"📊 Dashboard" },
+  { id:"groupes",   label:"🥧 Par groupe" },
+  { id:"pubs",      label:"🎯 Par pub"    },
+  { id:"analyse",   label:"🔍 Analyse"    },
+];
+
+function App() {
+  const [tab, setTab]   = useState("dashboard");
+  const [view, setView] = useState("import"); // "import" | "dashboard" | "historique" | "comparaison"
+  const [files, setFiles] = useState({ report: null, compta: null, nomMails: null, reportName: null, comptaName: null, nomMailsName: null });
+  const [filesMeta, setFilesMeta] = useState({ report: null, compta: null, nomMails: null });
+  const [demoMode, setDemoMode] = useState(false);
+  const [savedCampaigns, setSavedCampaigns] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("lc_campaigns_v9") || "[]"); } catch { return []; }
+  });
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveName, setSaveName]           = useState("");
+  const [loadedCampaign, setLoadedCampaign] = useState(null); // campagne chargée depuis l'historique
+
+  const persistCampaigns = useCallback((updated) => {
+    setSavedCampaigns(updated);
+    try { localStorage.setItem("lc_campaigns_v9", JSON.stringify(updated)); } catch(e) {
+      console.warn("localStorage full:", e);
+    }
+  }, []);
+
+  const setFile = useCallback((key, text, name) => {
+    if (text === null) {
+      setFiles(prev => ({ ...prev, [key]: null, [`${key}Name`]: null }));
+      setFilesMeta(prev => ({ ...prev, [key]: null }));
+      return;
+    }
+    setFiles(prev => ({ ...prev, [key]: text, [`${key}Name`]: name || key }));
+    setFilesMeta(prev => ({
+      ...prev,
+      [key]: { name: name || key, size: text.length, uploadedAt: new Date().toISOString(), preview: csvPreview(text) }
+    }));
+  }, []);
+
+  const parsedData = useMemo(() => {
+    if (!files.report || !files.compta || !files.nomMails) return null;
+    try {
+      const report   = parseHyrosReport(files.report);
+      const compta   = parseCompta(files.compta);
+      const nomMails = parseHyrosNomMails(files.nomMails);
+      const matching = matchSalesToPubs(compta, nomMails);
+      return { report, compta, nomMails, matching, meta: {
+        periodeAds: "Période Hyros Report",
+        periodeCompta: "Période Compta",
+        matching: `${Math.round(matching.matchedCount / matching.totalVentes * 100)}%`,
+      }};
+    } catch(e) { console.error("Parse error:", e); return null; }
+  }, [files]);
+
+  // Auto-switch to dashboard once files parsed
+  const hasData = !!parsedData || demoMode || !!loadedCampaign;
+  const data = loadedCampaign
+    ? { ...loadedCampaign.data, isFromHistory: true, campaignName: loadedCampaign.name, compta: loadedCampaign.data.compta || [], nomMails: [] }
+    : demoMode ? DEMO_DATA : parsedData;
+
+  const saveCurrentCampaign = () => {
+    if (!data || !saveName.trim()) return;
+    const entry = {
+      id: Date.now().toString(),
+      name: saveName.trim(),
+      savedAt: new Date().toISOString(),
+      importedAt: filesMeta.report?.uploadedAt || new Date().toISOString(),
+      data: { report: data.report, matching: data.matching },
+      csvMeta: demoMode
+        ? { report: { name:"[Démo] Report_I1.csv", size:0, uploadedAt: new Date().toISOString(), preview: null },
+            compta: { name:"[Démo] Ventes_I1.csv", size:0, uploadedAt: new Date().toISOString(), preview: null },
+            nomMails:{ name:"[Démo] NomMails_I1.csv", size:0, uploadedAt: new Date().toISOString(), preview: null } }
+        : filesMeta,
+    };
+    persistCampaigns([...savedCampaigns, entry]);
+    setShowSaveModal(false);
+    setSaveName("");
+  };
+
+  const deleteCampaign = useCallback((id) => {
+    persistCampaigns(savedCampaigns.filter(c => c.id !== id));
+  }, [savedCampaigns, persistCampaigns]);
+
+  const renameCampaign = useCallback((id, newName) => {
+    if (!newName.trim()) return;
+    persistCampaigns(savedCampaigns.map(c => c.id === id ? { ...c, name: newName.trim() } : c));
+  }, [savedCampaigns, persistCampaigns]);
+
+  const reimportCampaign = useCallback((id, newData, csvMeta) => {
+    persistCampaigns(savedCampaigns.map(c => c.id === id
+      ? { ...c, data: { ...c.data, ...newData }, csvMeta, importedAt: new Date().toISOString() }
+      : c
+    ));
+  }, [savedCampaigns, persistCampaigns]);
+
+  const loadCampaign = useCallback((campaign) => {
+    setLoadedCampaign(campaign);
+    setDemoMode(false);
+    setFiles({ report:null, compta:null, nomMails:null, reportName:null, comptaName:null, nomMailsName:null });
+    setView("dashboard");
+  }, []);
+
+  // Auto-navigate to dashboard when all 3 files loaded
+  useEffect(() => {
+    if (files.report && files.compta && files.nomMails && view === "import") {
+      setView("dashboard");
+    }
+  }, [files, view]);
+
+  // ── FileZone wrapper that captures filename ──────────────────────────────
+  const setFileWithMeta = useCallback((key, text, name) => setFile(key, text, name), [setFile]);
+
+  // ── View router ──────────────────────────────────────────────────────────
+  const goImport        = () => { setFiles({ report:null, compta:null, nomMails:null, reportName:null, comptaName:null, nomMailsName:null }); setDemoMode(false); setLoadedCampaign(null); setView("import"); };
+  const goHistorique    = () => setView("historique");
+  const goComparaison   = () => setView("comparaison");
+  const goDashboard     = () => setView("dashboard");
+
+  // ── Shared header ────────────────────────────────────────────────────────
+  const HeaderImport = () => (
+    <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shadow-sm sticky top-0 z-10">
+      <div className="flex items-center gap-3">
+        {/* Bouton retour dashboard si une campagne est active */}
+        {hasData && (view === "historique" || view === "comparaison") && (
+          <button onClick={goDashboard}
+            className="flex items-center gap-1 bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg text-xs hover:bg-indigo-100 transition-colors font-medium">
+            ← Dashboard
+          </button>
+        )}
+        <div>
+          <div className="text-base font-bold text-slate-900">🦁 Lioness Closing — Analyse Pub</div>
+          <div className="text-xs text-slate-400">
+            {view === "historique" ? "Historique des campagnes" : view === "comparaison" ? "Comparaison campagnes" : "Importez les 3 fichiers CSV"}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 text-xs">
+        {view !== "import" && !hasData && (
+          <button onClick={goImport} className="bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors font-medium">↩ Import</button>
+        )}
+        <button onClick={goHistorique}
+          className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${view === "historique" ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+          📁 Historique{savedCampaigns.length > 0 && <span className="ml-1.5 bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-full text-[10px] font-bold">{savedCampaigns.length}</span>}
+        </button>
+        {savedCampaigns.length >= 2 && (
+          <button onClick={goComparaison}
+            className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${view === "comparaison" ? "bg-purple-700 text-white" : "bg-purple-100 text-purple-700 hover:bg-purple-200"}`}>
+            ⇄ Comparer
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  // ── Non-dashboard views ──────────────────────────────────────────────────
+  if (!hasData || view === "historique" || view === "comparaison" || view === "import") {
+    return (
+      <div className="min-h-screen bg-slate-50 font-sans">
+        <HeaderImport />
+        {view === "historique"  && <TabHistorique savedCampaigns={savedCampaigns} onDelete={deleteCampaign} onRename={renameCampaign} onReimport={reimportCampaign} onGoComparaison={goComparaison} onLoad={loadCampaign} />}
+        {view === "comparaison" && (
+          <div className="max-w-5xl mx-auto p-6">
+            <TabComparaison savedCampaigns={savedCampaigns} onDelete={deleteCampaign} />
+          </div>
+        )}
+        {(view === "import" || (!hasData && view !== "historique" && view !== "comparaison")) && (
+          <ImportScreen files={files}
+            setFile={setFileWithMeta}
+            onDemo={() => { setDemoMode(true); setView("dashboard"); }} />
+        )}
+      </div>
+    );
+  }
+
+  // ── Dashboard view ───────────────────────────────────────────────────────
+  const { report, matching } = data;
+  const ROAS = safe(matching.totalRevenu / report.globalCost);
+  const meta = data.meta || { periodeAds:"—", periodeCompta:"—", matching:`${Math.round(matching.matchedCount/matching.totalVentes*100)}%` };
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans">
+      {/* Save modal */}
+      {showSaveModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-80 space-y-4">
+            <div className="text-sm font-bold text-slate-800">💾 Sauvegarder cette campagne</div>
+            <input value={saveName} onChange={e => setSaveName(e.target.value)}
+              placeholder="ex: Immersion 1 — Jan 2026"
+              onKeyDown={e => e.key === "Enter" && saveCurrentCampaign()}
+              autoFocus
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none" />
+            <div className="flex gap-2">
+              <button onClick={() => setShowSaveModal(false)}
+                className="flex-1 border border-slate-200 text-slate-600 py-2 rounded-xl text-sm hover:bg-slate-50">Annuler</button>
+              <button onClick={saveCurrentCampaign} disabled={!saveName.trim()}
+                className="flex-1 bg-indigo-600 text-white py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40">Sauvegarder</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header dashboard */}
+      <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+        {/* Ligne 1 : titre + KPIs */}
+        <div className="px-6 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="text-base font-bold text-slate-900 whitespace-nowrap">🦁 Lioness Closing — Analyse Pub</div>
+            {data.isDemo && <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full font-medium flex-shrink-0">Démo</span>}
+            {data.isFromHistory && <span className="text-xs bg-amber-100 text-amber-600 px-2 py-0.5 rounded-full font-medium flex-shrink-0">Historique</span>}
+            <div className="text-xs text-slate-400 truncate hidden sm:block">
+              {data.isDemo ? "Immersion 1" : data.isFromHistory ? data.campaignName : `${matching.totalVentes + matching.retracts} lignes · ${matching.matchedCount}/${matching.totalVentes} attribuées`}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs flex-shrink-0">
+            <DataQualityChip meta={meta} />
+            <span className={`px-2.5 py-1 rounded-full font-bold ${ROAS >= 8 ? "bg-green-100 text-green-700" : ROAS >= 4 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700"}`}>ROAS {fmt(ROAS,2)}x</span>
+            <span className="bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full font-semibold">Budget {fmtEur(report.globalCost)}</span>
+            <span className="bg-purple-100 text-purple-700 px-2.5 py-1 rounded-full font-semibold">{matching.totalVentes} ventes</span>
+          </div>
+        </div>
+        {/* Ligne 2 : tabs + actions */}
+        <div className="border-t border-slate-100 px-6 flex items-center justify-between">
+          <div className="flex">
+            {TABS.map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)}
+                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === t.id ? "border-indigo-500 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5 text-xs">
+            <button onClick={() => setShowSaveModal(true)}
+              className="flex items-center gap-1 bg-green-50 text-green-700 border border-green-200 px-3 py-1.5 rounded-lg hover:bg-green-100 transition-colors font-medium">
+              💾 Sauvegarder
+            </button>
+            <button onClick={goHistorique}
+              className="flex items-center gap-1 bg-slate-50 text-slate-600 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors font-medium">
+              📁 Historique{savedCampaigns.length > 0 && <span className="ml-1 bg-slate-200 text-slate-600 px-1.5 rounded-full text-[10px] font-bold">{savedCampaigns.length}</span>}
+            </button>
+            {savedCampaigns.length >= 2 && (
+              <button onClick={goComparaison}
+                className="flex items-center gap-1 bg-purple-50 text-purple-700 border border-purple-200 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition-colors font-medium">
+                ⇄ Comparer
+              </button>
+            )}
+            <button onClick={goImport}
+              className="flex items-center gap-1 bg-slate-50 text-slate-500 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors">
+              ↩ Recharger
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-5xl mx-auto">
+        {tab === "dashboard" && <TabDashboard data={data} />}
+        {tab === "groupes"   && <TabParGroupe data={data} />}
+        {tab === "pubs"      && <TabPubs data={data} />}
+        {tab === "analyse"   && <TabAnalyse data={data} />}
+      </div>
+    </div>
+  );
+}
+
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>
