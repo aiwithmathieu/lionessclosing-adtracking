@@ -4,19 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>🦁 Lioness Closing — Analyse Pub</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
-  <script src="https://unpkg.com/recharts@2.1.16/umd/Recharts.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #f8fafc; }</style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.1.16/Recharts.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8fafc; }
+  </style>
 </head>
 <body>
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
 const { useState, useCallback, useMemo, useEffect } = React;
-const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LineChart, Line, PieChart, Pie, Legend, Sector } = Recharts;
+const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+        Cell, LineChart, Line, PieChart, Pie, Legend, Sector } = Recharts;
 
 // ─── CONSTANTES COULEURS ────────────────────────────────────────────────────
 const G_COLOR = { A: "#6366f1", B: "#10b981", C: "#f59e0b", "?": "#94a3b8" };
@@ -102,7 +105,6 @@ function parseHyrosReport(text) {
     }
   }
 
-  // Global stats from Total row (not double-counted)
   const totalRow = rows.find(r => r.Name === "Total") || {};
   return {
     bodies: Object.values(bodies),
@@ -174,7 +176,7 @@ function matchSalesToPubs(comptaRows, nomMails) {
   return { bodyRevenu, nonAttrVentes, nonAttrRevenu, matchedCount, totalVentes: real.length, retracts: retracts.length, totalRevenu };
 }
 
-// ─── DONNÉES DÉMO — Immersion 1 (figées, Option B : inject processedData) ────
+// ─── DONNÉES DÉMO ────────────────────────────────────────────────────────────
 const DEMO_DATA = (() => {
   const bodies = [
     { key:"A_A1", groupe:"A", body:"A1", cost:629,   leads:97,   calls:13, salesHyros:3,  cog:0 },
@@ -199,10 +201,9 @@ const DEMO_DATA = (() => {
     C_C2:{ ventes:42, revenu:100949}, C_C3:{ ventes:4, revenu:9545 },
     C_C4:{ ventes:5,  revenu:11595 },
   };
-  // Fake compta rows (just enough for TabDashboard calcs)
   const compta = [
-    ...[...Array(147)].map((_,i) => ({ total: Math.round(350222/147), isRetract: false, tokens:[], name:"demo" })),
-    ...[...Array(12)].map((_,i) => ({ total: Math.round(28920/12), isRetract: true, tokens:[], name:"demo - rétractation" })),
+    ...[...Array(147)].map(() => ({ total: Math.round(350222/147), isRetract: false, tokens:[], name:"demo" })),
+    ...[...Array(12)].map(() => ({ total: Math.round(28920/12), isRetract: true, tokens:[], name:"demo - rétractation" })),
   ];
   return {
     isDemo: true,
@@ -221,6 +222,74 @@ const DEMO_DATA = (() => {
 })();
 
 // ─── COMPOSANTS UI ───────────────────────────────────────────────────────────
+// ─── AUTH HISTORIQUE ────────────────────────────────────────────────────────
+const HISTORIQUE_HASH = "4b312c2b4ddd0f2e8f191c0d24d185f6c81a395d4879f9af6b0e055095e61292";
+const AUTH_SESSION_KEY = "lc_hist_auth";
+
+async function sha256(str) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+function HistoriqueAuthGate({ onAuth }) {
+  const [pwd, setPwd]     = useState("");
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!pwd) return;
+    setLoading(true);
+    setError(false);
+    try {
+      const hash = await sha256(pwd);
+      if (hash === HISTORIQUE_HASH) {
+        sessionStorage.setItem(AUTH_SESSION_KEY, "1");
+        onAuth();
+      } else {
+        setError(true);
+        setPwd("");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center p-6">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xl p-8 w-full max-w-sm space-y-5">
+        <div className="text-center space-y-2">
+          <div className="text-4xl">🔐</div>
+          <h2 className="text-base font-bold text-slate-800">Accès protégé</h2>
+          <p className="text-xs text-slate-500">L'historique contient des données sensibles.<br />Entrez le mot de passe pour continuer.</p>
+        </div>
+        <div className="space-y-3">
+          <input
+            type="password"
+            value={pwd}
+            onChange={e => { setPwd(e.target.value); setError(false); }}
+            onKeyDown={e => e.key === "Enter" && handleSubmit()}
+            placeholder="Mot de passe"
+            autoFocus
+            className={`w-full border rounded-xl px-4 py-2.5 text-sm focus:ring-2 outline-none transition-all
+              ${error ? "border-rose-400 focus:ring-rose-200 bg-rose-50" : "border-slate-200 focus:ring-indigo-200"}`}
+          />
+          {error && (
+            <p className="text-xs text-rose-600 font-medium">Mot de passe incorrect.</p>
+          )}
+          <button
+            onClick={handleSubmit}
+            disabled={!pwd || loading}
+            className="w-full bg-indigo-600 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+          >
+            {loading ? "Vérification…" : "Accéder à l'historique"}
+          </button>
+        </div>
+        <p className="text-[10px] text-slate-300 text-center">Accès restreint aux données internes Lioness Closing</p>
+      </div>
+    </div>
+  );
+}
+
 const ABBREV = {
   CPA:     "Coût Par Acquisition — budget total divisé par le nombre de ventes effectives",
   CPL:     "Coût Par Lead — montant dépensé pour générer un lead",
@@ -393,10 +462,6 @@ function TabDashboard({ data }) {
   const revenuBrut = compta.reduce((s, r) => s + (r.total || 0), 0);
   const revRetract = compta.filter(r => r.isRetract).reduce((s, r) => s + (r.total || 0), 0);
 
-  // Ventes par jour from compta (parse date col if available — approximate grouping)
-  // We'll show KPIs instead since date parsing is complex
-
-  // Levier data from report
   const leviers = ["A","B","C"].map(g => {
     const bs = report.bodies.filter(b => b.groupe === g);
     return {
@@ -409,14 +474,13 @@ function TabDashboard({ data }) {
   });
 
   const execSummary = ROAS >= 8
-    ? `✅ Campagne très rentable — ROAS ${fmt(ROAS,1)}x — ${totalVentes} ventes effectives — Groupe ${leviers.sort((a,b) => safe(matching.bodyRevenu[`${b.label[0]}_${b.label[0]}1`]?.revenu||0)/b.cost - safe(matching.bodyRevenu[`${a.label[0]}_${a.label[0]}1`]?.revenu||0)/a.cost)[0]?.label[0] || "A"} meilleur closing`
+    ? `✅ Campagne très rentable — ROAS ${fmt(ROAS,1)}x — ${totalVentes} ventes effectives`
     : ROAS >= 4
     ? `🟡 Campagne rentable — ROAS ${fmt(ROAS,1)}x — ${totalVentes} ventes effectives`
     : `⚠️ ROAS ${fmt(ROAS,1)}x — Analyse approfondie recommandée`;
 
   return (
     <div className="p-6 space-y-6">
-      {/* Executive summary */}
       <div className={`rounded-xl p-4 text-sm font-semibold border ${ROAS >= 8 ? "bg-green-50 border-green-300 text-green-800" : ROAS >= 4 ? "bg-amber-50 border-amber-300 text-amber-800" : "bg-rose-50 border-rose-300 text-rose-800"}`}>
         {execSummary}
         <span className="ml-2 font-normal text-xs opacity-70">· Matching {matching.matchedCount}/{totalVentes} ventes attribuées à une pub</span>
@@ -669,40 +733,61 @@ function TabParGroupe({ data }) {
         </div>
       </div>
 
-      {/* Vue globale mini-bars */}
+      {/* ── Vue globale 5 métriques — GRILLE 2 COL + BARRES LARGES ── */}
       <Section title="Vue globale — 5 métriques par groupe" sub="% incluent Non attribué — total = 100% par métrique">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {Object.entries(pieConfigs).map(([key, cfg]) => (
             <div key={key}
               className={`bg-white rounded-xl border p-5 cursor-pointer transition-all hover:shadow-md ${selected === key ? "border-slate-800 shadow-md ring-2 ring-slate-200" : "border-slate-200"}`}
               onClick={() => { setSelected(key); setActiveIndex(0); }}>
-              <div className="text-xs font-semibold text-slate-500 uppercase mb-4">{cfg.label}</div>
-              {/* Grille 20% */}
+
+              {/* Titre de la carte */}
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-4">{cfg.label}</div>
+
+              {/* Lignes de groupes */}
               <div className="space-y-3">
                 {cfg.data.map(d => (
                   <div key={d.name}>
-                    <div className="flex items-center justify-between mb-1">
+                    {/* Label + valeur % */}
+                    <div className="flex items-center justify-between mb-1.5">
                       <span className="flex items-center gap-1.5 text-xs text-slate-600 font-medium">
-                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: d.color }} />
+                        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: d.color }} />
                         {d.name}
                       </span>
-                      <span className="text-xs font-bold text-slate-700">{fmt(d.pct,1)}%</span>
+                      <span className="text-xs font-bold tabular-nums" style={{ color: d.color }}>
+                        {fmt(d.pct, 1)}%
+                      </span>
                     </div>
+
+                    {/* Barre avec grille 20% */}
                     <div className="relative h-5 bg-slate-100 rounded-md overflow-hidden">
-                      {/* Lignes de grille tous les 20% */}
-                      {[20,40,60,80].map(tick => (
-                        <div key={tick} className="absolute top-0 bottom-0 w-px bg-slate-300/60" style={{ left:`${tick}%` }} />
+                      {/* Lignes de grille verticales à 20%, 40%, 60%, 80% */}
+                      {[20, 40, 60, 80].map(tick => (
+                        <div
+                          key={tick}
+                          className="absolute top-0 bottom-0 w-px"
+                          style={{ left: `${tick}%`, background: "rgba(148,163,184,0.5)" }}
+                        />
                       ))}
-                      {/* Barre */}
-                      <div className="absolute top-0 left-0 h-full rounded-md transition-all duration-300"
-                        style={{ width:`${Math.max(d.pct,0.5)}%`, background: d.color, opacity: 0.85 }} />
+                      {/* Barre de valeur */}
+                      <div
+                        className="absolute top-0 left-0 h-full rounded-md transition-all duration-500"
+                        style={{
+                          width: `${Math.max(d.pct, 0.5)}%`,
+                          background: d.color,
+                          opacity: 0.82,
+                        }}
+                      />
                     </div>
                   </div>
                 ))}
               </div>
-              {/* Axe 0–100% */}
-              <div className="relative mt-1 flex justify-between text-[10px] text-slate-300 px-0">
-                {[0,20,40,60,80,100].map(t => <span key={t}>{t}%</span>)}
+
+              {/* Axe 0% → 100% */}
+              <div className="flex justify-between mt-2 px-0">
+                {[0, 20, 40, 60, 80, 100].map(t => (
+                  <span key={t} className="text-[10px] text-slate-300 tabular-nums">{t}%</span>
+                ))}
               </div>
             </div>
           ))}
@@ -719,10 +804,8 @@ function TabPubs({ data }) {
   const [groupeFilter, setGroupeFilter] = useState("ALL");
   const [sortBy, setSortBy] = useState("roas");
 
-  // Merge report bodies with compta matching
   const pubsData = useMemo(() => {
     const allBodies = [...report.bodies];
-    // Add non-attributed row
     if (report.nonTaggedCost > 0) {
       allBodies.push({ key:"?", groupe:"?", body:"Non attribué", cost: report.nonTaggedCost, leads: report.nonTaggedLeads, calls: report.nonTaggedCalls, salesHyros: report.nonTaggedSales, cog: 0 });
     }
@@ -763,7 +846,6 @@ function TabPubs({ data }) {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Filtres */}
       <div className="flex flex-wrap gap-3 items-center">
         <div className="flex gap-2">
           {["ALL","A","B","C"].map(g => (
@@ -855,7 +937,6 @@ function TabPubs({ data }) {
         </div>
       </Section>
 
-      {/* Top performers */}
       <Section title="Top 5 bodies par ROAS compta">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...pubsData].filter(p => p.roas > 0 && p.groupe !== "?").sort((a,b) => b.roas - a.roas).slice(0,6).map((p,i) => (
@@ -899,7 +980,6 @@ function TabAnalyse({ data }) {
   const ROAS = safe(totalRevenu / report.globalCost);
   const CALL_CVR = safe(totalVentes / report.globalCalls * 100);
 
-  // Best groupe by call→vente
   const groupeCallCvr = ["A","B","C"].map(g => {
     const bs = report.bodies.filter(b => b.groupe === g);
     const calls = bs.reduce((s,b) => s+b.calls, 0);
@@ -922,7 +1002,7 @@ function TabAnalyse({ data }) {
         { title: `ROAS ${fmt(ROAS,2)}x — campagne rentable`, desc: `Pour ${fmtEur(report.globalCost)} investis, la compta enregistre ${fmtEur(totalRevenu)} de revenu effectif. Le seuil de rentabilité sur du high-ticket est typiquement 2.5–3x. Marge confortable pour scaler.` },
         { title: `Call → Vente : ${fmt(CALL_CVR,1)}% — taux solide`, desc: `${totalVentes} ventes effectives pour ${report.globalCalls} calls bookés. Un taux >15% sur ce type de produit est au-dessus de la norme du secteur (10–12%). Bonne qualification en amont et script closing performant.` },
         { title: `Groupe ${bestG.g} — meilleur taux call→vente (${fmt(bestG.cvr,1)}%)`, desc: `Groupe ${bestG.g} convertit ${fmt(bestG.cvr,1)}% de ses calls en ventes — contre ${fmt(worstG.cvr,1)}% pour Groupe ${worstG.g}. À budget et volume égaux, ${bestG.g} génère proportionnellement plus de revenus.` },
-        { title: `Attribution réelle : ${matchedCount}/${totalVentes} ventes tracées à leur pub source`, desc: `Matching nom compta → email Hyros → source pub permet d'attribuer ${matchedCount} ventes avec certitude. Chaque vente est rattachée à son Body source pour un ROAS pub-niveau fiable.` },
+        { title: `Attribution réelle : ${matchedCount}/${totalVentes} ventes tracées à leur pub source`, desc: `Matching nom compta → email Hyros → source pub permet d'attribuer ${matchedCount} ventes avec certitude.` },
       ],
     },
     {
@@ -932,8 +1012,8 @@ function TabAnalyse({ data }) {
       tagColor: "bg-amber-200 text-amber-800",
       items: [
         { title: `Groupe ${worstG.g} : taux call→vente le plus faible (${fmt(worstG.cvr,1)}%)`, desc: `Groupe ${worstG.g} a le plus faible taux de closing. Scaler ce groupe sans corriger cet écart dégrade mécaniquement le ROAS global.` },
-        { title: `Rétractations : ${retractPct}% — à monitorer par closeuse`, desc: `${retracts} rétractations détectées automatiquement dans le fichier compta (libellé "rétractation" dans le nom). Sans analyse par closeuse, impossible de distinguer un problème de script ou de timing encaissement.` },
-        { title: `${nonAttrPct}% des ventes non attribuées à une pub`, desc: `${nonAttrVentes} ventes sur ${totalVentes} sans attribution pub. Causes : campagnes Meta sans convention de nommage [Groupe-X], ou clientes absentes de Hyros. Résolu dès que le naming est normalisé.` },
+        { title: `Rétractations : ${retractPct}% — à monitorer par closeuse`, desc: `${retracts} rétractations détectées automatiquement dans le fichier compta.` },
+        { title: `${nonAttrPct}% des ventes non attribuées à une pub`, desc: `${nonAttrVentes} ventes sur ${totalVentes} sans attribution pub. Causes : campagnes Meta sans convention de nommage [Groupe-X].` },
       ],
     },
     {
@@ -942,18 +1022,18 @@ function TabAnalyse({ data }) {
       headerColor: "bg-blue-100 text-blue-800 border-blue-200 hover:bg-blue-200",
       tagColor: "bg-blue-200 text-blue-800",
       items: [
-        { title: `Scaler Groupe ${bestG.g} — meilleur call→vente, potentiellement sous-budgété`, desc: `Groupe ${bestG.g} a le meilleur taux de closing (${fmt(bestG.cvr,1)}%). Augmenter progressivement son budget par paliers de 20% en mesurant la stabilité du CPL.` },
-        { title: "Relances post-immersion : planifier J+7, J+14, J+21", desc: `Une séquence email de relance structurée sur les leads non convertis peut générer du revenu supplémentaire sans coût pub additionnel.` },
-        { title: "Normaliser le naming campagnes Meta", desc: `Renommer toutes les campagnes avec le préfixe [Groupe-X][Body-XX]. Résout les ${nonAttrVentes} ventes "Non attribué" dès la prochaine campagne.` },
+        { title: `Scaler Groupe ${bestG.g} — meilleur call→vente`, desc: `Augmenter progressivement son budget par paliers de 20% en mesurant la stabilité du CPL.` },
+        { title: "Relances post-immersion : J+7, J+14, J+21", desc: `Séquence email de relance sur les leads non convertis — revenu supplémentaire sans coût pub additionnel.` },
+        { title: "Normaliser le naming campagnes Meta", desc: `Renommer toutes les campagnes avec le préfixe [Groupe-X][Body-XX].` },
       ],
     },
   ];
 
   const recos = [
-    { n:1, tag:"Budget", desc:`Augmenter le budget Groupe ${bestG.g} (meilleur call→vente).`, detail:`Tester +30% de budget par semaine (paliers), mesurer si le CPL se maintient. Si stable à x2 du budget, réallouer progressivement depuis le groupe le moins performant.` },
-    { n:2, tag:"Naming", desc:"Renommer toutes les campagnes Meta avec [Groupe-X] et [Body-XX].", detail:`Action dans Meta Ads Manager : renommer chaque campagne active. Exemple : "broad-35-60-ans-france" → "[Groupe-C] broad-35-60-ans-france [Body C2]". Résout les ${nonAttrVentes} ventes "Non attribué" dès la prochaine campagne.` },
-    { n:3, tag:"Rétractations", desc:`Analyser les ${retracts} rétractations par closeuse et par créa d'entrée.`, detail:`Croiser le fichier compta (noms avec "rétractation") avec la closeuse responsable et la campagne source. Objectif : passer sous 5% de taux de rétractation.` },
-    { n:4, tag:"Fenêtre attribution", desc:"Étendre la fenêtre compta à J+28 après arrêt des pubs.", detail:`Analyser les résultats au moins 4 semaines après l'arrêt des pubs pour capturer toutes les ventes issues des relances et de la maturation des leads.` },
+    { n:1, tag:"Budget", desc:`Augmenter le budget Groupe ${bestG.g} (meilleur call→vente).`, detail:`Tester +30% de budget par semaine (paliers), mesurer si le CPL se maintient.` },
+    { n:2, tag:"Naming", desc:"Renommer toutes les campagnes Meta avec [Groupe-X] et [Body-XX].", detail:`Action dans Meta Ads Manager : renommer chaque campagne active. Résout les ${nonAttrVentes} ventes "Non attribué".` },
+    { n:3, tag:"Rétractations", desc:`Analyser les ${retracts} rétractations par closeuse et par créa d'entrée.`, detail:`Croiser le fichier compta avec la closeuse responsable et la campagne source.` },
+    { n:4, tag:"Fenêtre attribution", desc:"Étendre la fenêtre compta à J+28 après arrêt des pubs.", detail:`Analyser les résultats au moins 4 semaines après l'arrêt des pubs.` },
   ];
 
   return (
@@ -1085,7 +1165,7 @@ function TabComparaison({ savedCampaigns, onDelete }) {
     return { pct, improved };
   };
 
-  const DeltaCell = ({ a, b, lowerIsBetter = false, fmt: fmtFn = v => v }) => {
+  const DeltaCell = ({ a, b, lowerIsBetter = false }) => {
     const d = delta(a, b, lowerIsBetter);
     if (d === null) return <td className="text-center p-3 text-slate-300">—</td>;
     const color = d.improved ? "text-green-600" : "text-rose-500";
@@ -1119,7 +1199,6 @@ function TabComparaison({ savedCampaigns, onDelete }) {
     { label:"Rétractation %", a: safe(am.retracts/(am.retracts+am.totalVentes)*100), b: safe(bm.retracts/(bm.retracts+bm.totalVentes)*100), fmt: v => `${fmt(v,1)}%`, lowerIsBetter: true },
   ];
 
-  // Stable winners — bodies top 33% dans les 2 campagnes
   const getTopBodies = (data) => {
     const all = Object.entries(data.matching.bodyRevenu)
       .map(([key, v]) => ({ key, roas: safe(v.revenu / (data.report.bodies.find(b=>b.key===key)?.cost||Infinity)) }))
@@ -1139,7 +1218,6 @@ function TabComparaison({ savedCampaigns, onDelete }) {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Sélecteurs campagnes */}
       <div className="grid grid-cols-3 gap-4 items-center">
         <div className="space-y-1">
           <div className="text-xs text-slate-500 font-medium uppercase">Campagne A</div>
@@ -1158,14 +1236,12 @@ function TabComparaison({ savedCampaigns, onDelete }) {
         </div>
       </div>
 
-      {/* Légende Δ */}
       <div className="flex gap-4 text-xs text-slate-500">
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-50 border border-green-200" /> Amélioration vs A</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-rose-50 border border-rose-200" /> Dégradation vs A</span>
         <span className="ml-auto text-slate-400">Δ = (B − A) / |A| en %</span>
       </div>
 
-      {/* Tableau comparatif par groupe de métriques */}
       {groups.map(g => (
         <div key={g.label} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200">{g.label}</div>
@@ -1184,7 +1260,7 @@ function TabComparaison({ savedCampaigns, onDelete }) {
                   <td className="p-3 text-xs font-medium text-slate-600">{row.label}</td>
                   <td className="text-center p-3 font-semibold text-slate-800">{row.fmt(row.a)}</td>
                   <td className="text-center p-3 font-semibold text-slate-800">{row.fmt(row.b)}</td>
-                  <DeltaCell a={row.a} b={row.b} lowerIsBetter={row.lowerIsBetter} fmt={row.fmt} />
+                  <DeltaCell a={row.a} b={row.b} lowerIsBetter={row.lowerIsBetter} />
                 </tr>
               ))}
             </tbody>
@@ -1192,7 +1268,6 @@ function TabComparaison({ savedCampaigns, onDelete }) {
         </div>
       ))}
 
-      {/* Stable Winners */}
       <div className="bg-white rounded-xl border border-slate-200 p-4">
         <div className="text-xs font-semibold text-slate-600 uppercase mb-3">🏆 Bodies stables — Top 33% dans les deux campagnes</div>
         {stable.length > 0 ? (
@@ -1209,12 +1284,10 @@ function TabComparaison({ savedCampaigns, onDelete }) {
             })}
           </div>
         ) : (
-          <div className="text-xs text-slate-400 italic">Aucun body commun dans le top 33% des deux campagnes — structure différente.</div>
+          <div className="text-xs text-slate-400 italic">Aucun body commun dans le top 33% des deux campagnes.</div>
         )}
-        <div className="text-[10px] text-slate-400 mt-2">Ces bodies sont à conserver prioritairement pour la prochaine campagne.</div>
       </div>
 
-      {/* Gestion campagnes */}
       <div className="flex flex-wrap gap-2 pt-2">
         <span className="text-xs text-slate-400 self-center">Campagnes sauvegardées :</span>
         {savedCampaigns.map(c => (
@@ -1286,7 +1359,7 @@ function CsvPreviewModal({ label, preview, onClose }) {
           </table>
           {totalLines > rows.length && (
             <div className="mt-3 text-xs text-slate-400 text-center italic">
-              … {totalLines - rows.length} lignes supplémentaires non affichées (aperçu limité à {rows.length} lignes)
+              … {totalLines - rows.length} lignes supplémentaires non affichées
             </div>
           )}
         </div>
@@ -1305,7 +1378,7 @@ function ConfirmDeleteModal({ name, onConfirm, onCancel }) {
           <div>
             <div className="text-sm font-bold text-slate-800">Supprimer cette campagne ?</div>
             <div className="text-xs text-slate-500 mt-1">
-              <span className="font-semibold text-slate-700">"{name}"</span> sera définitivement supprimée. Cette action est irréversible.
+              <span className="font-semibold text-slate-700">"{name}"</span> sera définitivement supprimée.
             </div>
           </div>
         </div>
@@ -1332,7 +1405,7 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
   const [previewCsv, setPreviewCsv]     = useState(null);
   const [reimportId, setReimportId]     = useState(null);
   const [reimportFiles, setReimportFiles] = useState({ report: null, compta: null, nomMails: null });
-  const [deleteTarget, setDeleteTarget] = useState(null); // { id, name }
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   const CSV_DEFS = [
     { key:"report",   label:"Reporting Ads Hyros",            icon:"📊" },
@@ -1368,14 +1441,13 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
       <div className="p-12 text-center space-y-3">
         <div className="text-4xl">🗂️</div>
         <div className="text-sm font-medium text-slate-500">Aucune campagne sauvegardée</div>
-        <div className="text-xs text-slate-400">Importez des fichiers CSV puis cliquez sur 💾 Sauvegarder pour créer votre première entrée.</div>
+        <div className="text-xs text-slate-400">Importez des fichiers CSV puis cliquez sur 💾 Sauvegarder.</div>
       </div>
     );
   }
 
   return (
     <div className="p-6 space-y-4">
-      {/* En-tête */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide">Historique des campagnes</h2>
@@ -1389,7 +1461,6 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
         )}
       </div>
 
-      {/* Liste campagnes */}
       {[...savedCampaigns].reverse().map(c => {
         const roas = safe(c.data.matching.totalRevenu / c.data.report.globalCost);
         const isExpanded  = expandedId === c.id;
@@ -1399,7 +1470,6 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
 
         return (
           <div key={c.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            {/* En-tête de la fiche */}
             <div className="px-5 py-4 flex items-center gap-4">
               <div className="flex-1 min-w-0">
                 {isEditing ? (
@@ -1421,7 +1491,6 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
                 </div>
               </div>
 
-              {/* KPIs mini */}
               <div className="hidden md:flex items-center gap-3 text-xs flex-shrink-0">
                 <div className="text-center">
                   <div className="text-slate-400">Budget</div>
@@ -1441,7 +1510,6 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
                 </div>
               </div>
 
-              {/* Actions */}
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 {onLoad && (
                   <button onClick={() => onLoad(c)}
@@ -1464,10 +1532,8 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
               </div>
             </div>
 
-            {/* Section expandée */}
             {isExpanded && (
               <div className="border-t border-slate-100 bg-slate-50">
-                {/* KPIs détaillés */}
                 <div className="px-5 py-4 grid grid-cols-2 md:grid-cols-4 gap-3">
                   {[
                     { label:"Budget", value: fmtEur(c.data.report.globalCost), color:"slate" },
@@ -1486,7 +1552,6 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
                   ))}
                 </div>
 
-                {/* Fichiers CSV */}
                 <div className="px-5 pb-4">
                   <div className="text-xs font-semibold text-slate-500 uppercase mb-2">Fichiers CSV associés</div>
                   {c.csvMeta ? (
@@ -1502,7 +1567,7 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-semibold text-slate-700 truncate">{meta.name}</div>
                               <div className="text-[10px] text-slate-400 mt-0.5">
-                                {sizeKb} Ko · {prev?.totalLines || "?"} lignes · {prev?.headers?.length || "?"} colonnes · Uploadé le {fmtDate(meta.uploadedAt)}
+                                {sizeKb} Ko · {prev?.totalLines || "?"} lignes · Uploadé le {fmtDate(meta.uploadedAt)}
                               </div>
                             </div>
                             {prev && (
@@ -1521,7 +1586,6 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
                     </div>
                   )}
 
-                  {/* Ré-import */}
                   <div className="mt-4">
                     {!isReimport ? (
                       <button onClick={() => { setReimportId(c.id); setReimportFiles({ report:null, compta:null, nomMails:null }); }}
@@ -1531,7 +1595,6 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
                     ) : (
                       <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
                         <div className="text-xs font-semibold text-amber-800">🔄 Ré-import — {c.name}</div>
-                        <div className="text-xs text-amber-600">Importez les 3 nouveaux fichiers CSV. Les données et aperçus seront remplacés.</div>
                         <div className="grid grid-cols-1 gap-2">
                           {CSV_DEFS.map(def => (
                             <label key={def.key} className={`flex items-center gap-3 rounded-xl border-2 border-dashed px-3 py-2 cursor-pointer transition-all
@@ -1570,12 +1633,9 @@ function TabHistorique({ savedCampaigns, onDelete, onRename, onReimport, onGoCom
         );
       })}
 
-      {/* Modal aperçu CSV */}
       {previewCsv && (
         <CsvPreviewModal label={previewCsv.label} preview={previewCsv.preview} onClose={() => setPreviewCsv(null)} />
       )}
-
-      {/* Modal confirmation suppression */}
       {deleteTarget && (
         <ConfirmDeleteModal
           name={deleteTarget.name}
@@ -1597,7 +1657,7 @@ const TABS = [
 
 function App() {
   const [tab, setTab]   = useState("dashboard");
-  const [view, setView] = useState("import"); // "import" | "dashboard" | "historique" | "comparaison"
+  const [view, setView] = useState("import");
   const [files, setFiles] = useState({ report: null, compta: null, nomMails: null, reportName: null, comptaName: null, nomMailsName: null });
   const [filesMeta, setFilesMeta] = useState({ report: null, compta: null, nomMails: null });
   const [demoMode, setDemoMode] = useState(false);
@@ -1606,7 +1666,8 @@ function App() {
   });
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveName, setSaveName]           = useState("");
-  const [loadedCampaign, setLoadedCampaign] = useState(null); // campagne chargée depuis l'historique
+  const [loadedCampaign, setLoadedCampaign] = useState(null);
+  const [histAuth, setHistAuth] = useState(() => sessionStorage.getItem(AUTH_SESSION_KEY) === "1");
 
   const persistCampaigns = useCallback((updated) => {
     setSavedCampaigns(updated);
@@ -1643,7 +1704,6 @@ function App() {
     } catch(e) { console.error("Parse error:", e); return null; }
   }, [files]);
 
-  // Auto-switch to dashboard once files parsed
   const hasData = !!parsedData || demoMode || !!loadedCampaign;
   const data = loadedCampaign
     ? { ...loadedCampaign.data, isFromHistory: true, campaignName: loadedCampaign.name, compta: loadedCampaign.data.compta || [], nomMails: [] }
@@ -1691,27 +1751,22 @@ function App() {
     setView("dashboard");
   }, []);
 
-  // Auto-navigate to dashboard when all 3 files loaded
   useEffect(() => {
     if (files.report && files.compta && files.nomMails && view === "import") {
       setView("dashboard");
     }
   }, [files, view]);
 
-  // ── FileZone wrapper that captures filename ──────────────────────────────
   const setFileWithMeta = useCallback((key, text, name) => setFile(key, text, name), [setFile]);
 
-  // ── View router ──────────────────────────────────────────────────────────
-  const goImport        = () => { setFiles({ report:null, compta:null, nomMails:null, reportName:null, comptaName:null, nomMailsName:null }); setDemoMode(false); setLoadedCampaign(null); setView("import"); };
-  const goHistorique    = () => setView("historique");
-  const goComparaison   = () => setView("comparaison");
-  const goDashboard     = () => setView("dashboard");
+  const goImport      = () => { setFiles({ report:null, compta:null, nomMails:null, reportName:null, comptaName:null, nomMailsName:null }); setDemoMode(false); setLoadedCampaign(null); setView("import"); };
+  const goHistorique  = () => setView("historique");
+  const goComparaison = () => setView("comparaison");
+  const goDashboard   = () => setView("dashboard");
 
-  // ── Shared header ────────────────────────────────────────────────────────
   const HeaderImport = () => (
     <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shadow-sm sticky top-0 z-10">
       <div className="flex items-center gap-3">
-        {/* Bouton retour dashboard si une campagne est active */}
         {hasData && (view === "historique" || view === "comparaison") && (
           <button onClick={goDashboard}
             className="flex items-center gap-1 bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg text-xs hover:bg-indigo-100 transition-colors font-medium">
@@ -1726,9 +1781,6 @@ function App() {
         </div>
       </div>
       <div className="flex items-center gap-2 text-xs">
-        {view !== "import" && !hasData && (
-          <button onClick={goImport} className="bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors font-medium">↩ Import</button>
-        )}
         <button onClick={goHistorique}
           className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${view === "historique" ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
           📁 Historique{savedCampaigns.length > 0 && <span className="ml-1.5 bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-full text-[10px] font-bold">{savedCampaigns.length}</span>}
@@ -1743,16 +1795,21 @@ function App() {
     </div>
   );
 
-  // ── Non-dashboard views ──────────────────────────────────────────────────
   if (!hasData || view === "historique" || view === "comparaison" || view === "import") {
     return (
       <div className="min-h-screen bg-slate-50 font-sans">
         <HeaderImport />
-        {view === "historique"  && <TabHistorique savedCampaigns={savedCampaigns} onDelete={deleteCampaign} onRename={renameCampaign} onReimport={reimportCampaign} onGoComparaison={goComparaison} onLoad={loadCampaign} />}
-        {view === "comparaison" && (
-          <div className="p-6">
-            <TabComparaison savedCampaigns={savedCampaigns} onDelete={deleteCampaign} />
-          </div>
+        {view === "historique"  && (!histAuth
+          ? <HistoriqueAuthGate onAuth={() => setHistAuth(true)} />
+          : <TabHistorique savedCampaigns={savedCampaigns} onDelete={deleteCampaign} onRename={renameCampaign} onReimport={reimportCampaign} onGoComparaison={goComparaison} onLoad={loadCampaign} />
+        )}
+        {view === "comparaison" && (!histAuth
+          ? <HistoriqueAuthGate onAuth={() => setHistAuth(true)} />
+          : (
+            <div className="p-6">
+              <TabComparaison savedCampaigns={savedCampaigns} onDelete={deleteCampaign} />
+            </div>
+          )
         )}
         {(view === "import" || (!hasData && view !== "historique" && view !== "comparaison")) && (
           <ImportScreen files={files}
@@ -1763,14 +1820,12 @@ function App() {
     );
   }
 
-  // ── Dashboard view ───────────────────────────────────────────────────────
   const { report, matching } = data;
   const ROAS = safe(matching.totalRevenu / report.globalCost);
   const meta = data.meta || { periodeAds:"—", periodeCompta:"—", matching:`${Math.round(matching.matchedCount/matching.totalVentes*100)}%` };
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans">
-      {/* Save modal */}
       {showSaveModal && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-80 space-y-4">
@@ -1792,7 +1847,6 @@ function App() {
 
       {/* Header dashboard */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
-        {/* Ligne 1 : titre + KPIs */}
         <div className="px-6 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <div className="text-base font-bold text-slate-900 whitespace-nowrap">🦁 Lioness Closing — Analyse Pub</div>
@@ -1809,7 +1863,6 @@ function App() {
             <span className="bg-purple-100 text-purple-700 px-2.5 py-1 rounded-full font-semibold">{matching.totalVentes} ventes</span>
           </div>
         </div>
-        {/* Ligne 2 : tabs + actions */}
         <div className="border-t border-slate-100 px-6 flex items-center justify-between">
           <div className="flex">
             {TABS.map(t => (
@@ -1842,6 +1895,7 @@ function App() {
         </div>
       </div>
 
+      {/* Contenu — pleine largeur */}
       <div className="w-full">
         {tab === "dashboard" && <TabDashboard data={data} />}
         {tab === "groupes"   && <TabParGroupe data={data} />}
@@ -1852,8 +1906,8 @@ function App() {
   );
 }
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(React.createElement(App));
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
   </script>
 </body>
 </html>
